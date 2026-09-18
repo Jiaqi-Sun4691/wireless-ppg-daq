@@ -132,8 +132,13 @@ python3 -m pip install -r requirements.txt
 | **双击脚本** | 双击 `启动采集界面.command`（会开一个终端窗口） |
 | **命令行** | `python3 启动采集界面.py` |
 
-> **从 GitHub 下载 ZIP 的话**，macOS 会给解压出来的文件打「隔离」标记，
-> 双击 App 可能提示「已损坏」或者「无法验证开发者」。在项目目录里执行一次：
+> **从 GitHub 下载 ZIP 的话**，在访达里双击解压（用的是系统的 Archive Utility，
+> 中文文件名没问题）。**不要用命令行的 `unzip`** —— GitHub 打的 zip 没有设
+> UTF-8 文件名标志，Info-ZIP 会把中文名当成 CP437，一个中文文件都解不出来。
+> 非要在终端解压就用 `ditto -xk 下载的.zip 目标目录/`。
+>
+> 解压之后 macOS 会给这些文件打「隔离」标记，双击 App 可能提示「已损坏」
+> 或者「无法验证开发者」。在项目目录里执行一次：
 >
 > ```bash
 > xattr -dr com.apple.quarantine .
@@ -443,7 +448,7 @@ python3 视频对齐.py 视频.mp4 采集.csv --sync-video 12.40 --sync-csv 6523
 ## 自检与测试
 
 ```bash
-# 26 个单元测试：协议解析、健康判定、录制、固件参数、设置读写
+# 27 个单元测试：协议解析、健康判定、录制、固件参数、设置读写
 PYTHONPATH=. python3 -m unittest discover -s tests
 
 # 端到端自检：不接硬件，把一段 16 列数据当作 Master 输出回放进真实界面，
@@ -507,7 +512,7 @@ python3 启动采集界面.py --smoke-test
 │   ├── 02..05-*-monitor/
 │   └── 接线说明.md           #   ★ 接线看这个
 ├── tests/
-│   ├── test_core.py          #   26 个单元测试
+│   ├── test_core.py          #   27 个单元测试
 │   └── gui_smoke.py          #   端到端自检
 ├── sounds/alarm_siren.wav    # 3 级告警的连续警笛
 ├── 视频对齐.py               # 行车视频与 CSV 的时间轴对齐工具

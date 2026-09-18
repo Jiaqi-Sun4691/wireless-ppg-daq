@@ -23,7 +23,7 @@ from .firmware import (
     mac_to_cpp_initializer,
     normalize_mac,
 )
-from .monitor import HealthLevel, HealthMonitor, NodeHealth
+from .monitor import STATUS_PERIOD_MS, HealthLevel, HealthMonitor, NodeHealth
 from .protocol import (
     DEVICE_IDS,
     DEVICE_LABELS,
@@ -2821,6 +2821,33 @@ class PPGCollectorApp:
             )
             return
 
+        self.monitor.update_thresholds(offline, delayed, flat)
+        # The monitor enforces floors tied to the 500 ms @STATUS cadence. Write
+        # back whatever it actually adopted, so the number on screen is the
+        # number in use — otherwise the settings page quietly lies.
+        adopted = (
+            self.monitor.offline_ms,
+            self.monitor.delayed_ms,
+            self.monitor.flat_seconds,
+        )
+        if adopted != (offline, delayed, flat):
+            changes = [
+                f"{label} {was} → {now}"
+                for label, was, now in zip(
+                    ("离线", "延迟", "卡住"), (offline, delayed, flat), adopted
+                )
+                if was != now
+            ]
+            self._log(
+                "阈值已调整到可用范围：" + "，".join(changes)
+                + f"。Master 每 {STATUS_PERIOD_MS} ms 才发一条 @STATUS，"
+                "阈值比这个节奏还紧的话，正常的设备也会一直报警。"
+            )
+        offline, delayed, flat = adopted
+        self.offline_var.set(str(offline))
+        self.delayed_var.set(str(delayed))
+        self.flat_var.set(f"{flat:g}")
+
         self.settings.output_directory = self.output_var.get()
         self.settings.filename_prefix = self.prefix_var.get()
         self.settings.record_video = self.video_var.get()
@@ -2833,7 +2860,6 @@ class PPGCollectorApp:
         self.settings.firmware_fqbn = (
             self.firmware_fqbn_var.get().strip() or AUTO_BOARD_SELECTION
         )
-        self.monitor.update_thresholds(offline, delayed, flat)
         try:
             save_settings(self.settings)
         except OSError as exc:

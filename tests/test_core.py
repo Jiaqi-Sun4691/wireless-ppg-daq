@@ -18,10 +18,20 @@ from ppg_collector.firmware import (
     normalize_mac,
     stable_options_for_fqbn,
 )
-from ppg_collector.monitor import HealthLevel, HealthMonitor, battery_percentage
+from ppg_collector.monitor import (
+    STATUS_PERIOD_MS,
+    HealthLevel,
+    HealthMonitor,
+    battery_percentage,
+)
 from ppg_collector.protocol import LineKind, csv_columns_for_devices, parse_serial_line
 from ppg_collector.recorder import SessionRecorder, safe_prefix
-from ppg_collector.settings import AppSettings, load_settings, save_settings
+from ppg_collector.settings import (
+    AppSettings,
+    load_settings,
+    save_settings,
+    settings_path,
+)
 
 
 SAMPLE_LINE = "385214,1843,2097,1984,-24,1606,-1825,-1024,145,296,-506,-1933,437,0,0,0"
@@ -366,6 +376,69 @@ class SettingsTests(unittest.TestCase):
             self.assertFalse(actual.record_video)
             self.assertEqual(actual.master_mac, "AA:BB:CC:DD:EE:FF")
             self.assertEqual(actual.firmware_fqbn, "esp32:esp32:esp32doit-devkit-v1")
+
+    def test_defaults_carry_nothing_machine_specific(self) -> None:
+        """A fresh install must not inherit whoever's machine built it.
+
+        Settings live in the user's home, never in the repository, so these
+        defaults are what a teammate actually starts from.
+        """
+        defaults = AppSettings()
+        home = str(Path.home())
+        self.assertTrue(
+            defaults.output_directory.startswith(home),
+            f"默认保存目录跑到了 home 外面：{defaults.output_directory}",
+        )
+        self.assertTrue(str(settings_path()).startswith(home))
+        # No leftover port, MAC or subject name from the developer's bench.
+        self.assertEqual(defaults.preferred_port, "")
+        self.assertEqual(defaults.master_mac, "")
+        self.assertEqual(defaults.driver_name, "")
+        self.assertEqual(defaults.other_name, "")
+
+    def test_default_output_directory_follows_whoever_runs_it(self) -> None:
+        import importlib
+
+        import ppg_collector.settings as settings_module
+
+        original = Path.home
+        try:
+            Path.home = staticmethod(lambda: Path("/Users/someone-else"))
+            importlib.reload(settings_module)
+            self.assertEqual(
+                settings_module.AppSettings().output_directory,
+                "/Users/someone-else/Documents/PPG Data",
+            )
+        finally:
+            Path.home = original
+            importlib.reload(settings_module)
+
+
+class ThresholdTests(unittest.TestCase):
+    """The master only speaks every 500 ms, so thresholds have a hard floor."""
+
+    def test_delay_threshold_cannot_go_below_the_status_cadence(self) -> None:
+        monitor = HealthMonitor(offline_ms=1500, delayed_ms=300, flat_seconds=2.0)
+        self.assertGreater(monitor.delayed_ms, STATUS_PERIOD_MS)
+        self.assertEqual(monitor.delayed_ms, STATUS_PERIOD_MS + 200)
+
+    def test_floor_applies_to_stored_settings_not_just_edits(self) -> None:
+        # A too-tight value saved by an older build must be clamped on load,
+        # not only when the user opens the settings page again.
+        monitor = HealthMonitor(offline_ms=1500, delayed_ms=100, flat_seconds=0.1)
+        self.assertEqual(monitor.delayed_ms, STATUS_PERIOD_MS + 200)
+        self.assertEqual(monitor.flat_seconds, 0.5)
+
+    def test_offline_must_stay_above_delayed(self) -> None:
+        monitor = HealthMonitor(offline_ms=600, delayed_ms=400, flat_seconds=2.0)
+        self.assertGreater(monitor.offline_ms, monitor.delayed_ms)
+
+    def test_sane_values_pass_through_untouched(self) -> None:
+        monitor = HealthMonitor(offline_ms=2000, delayed_ms=800, flat_seconds=2.0)
+        self.assertEqual(
+            (monitor.offline_ms, monitor.delayed_ms, monitor.flat_seconds),
+            (2000, 800, 2.0),
+        )
 
 
 if __name__ == "__main__":

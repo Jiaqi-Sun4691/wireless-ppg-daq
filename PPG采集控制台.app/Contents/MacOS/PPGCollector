@@ -1,0 +1,45 @@
+#!/bin/zsh
+
+EXECUTABLE_DIRECTORY="${0:A:h}"
+PROJECT_DIRECTORY="$(cd "$EXECUTABLE_DIRECTORY/../../.." && pwd)"
+LOG_DIRECTORY="$HOME/Library/Logs/PPGCollector"
+CACHE_DIRECTORY="$HOME/Library/Caches/PPGCollector/matplotlib"
+LOG_FILE="$LOG_DIRECTORY/launch.log"
+
+/bin/mkdir -p "$LOG_DIRECTORY" "$CACHE_DIRECTORY"
+
+source "$PROJECT_DIRECTORY/查找Python.sh"
+if ! find_python; then
+  /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $PYTHON_MISSING_REASON" >>"$LOG_FILE"
+  /usr/bin/osascript -e "display dialog \"$PYTHON_MISSING_REASON\" with title \"PPG采集控制台无法启动\" buttons {\"确定\"} default button \"确定\" with icon stop"
+  exit 1
+fi
+
+# 结束可能残留的旧实例：否则双击只会激活一个已卡死的旧窗口，看起来像“没反应”。
+STALE_PIDS=$(/usr/bin/pgrep -f "启动采集界面.py" 2>/dev/null)
+if [[ -n "$STALE_PIDS" ]]; then
+  /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] closing stale instance: $STALE_PIDS" >>"$LOG_FILE" 2>/dev/null
+  /bin/kill $STALE_PIDS 2>/dev/null
+  /bin/sleep 1
+  STILL=$(/usr/bin/pgrep -f "启动采集界面.py" 2>/dev/null)
+  [[ -n "$STILL" ]] && /bin/kill -9 $STILL 2>/dev/null
+fi
+
+export MPLCONFIGDIR="$CACHE_DIRECTORY"
+export PYTHONPATH="$PROJECT_DIRECTORY"
+
+cd "$PROJECT_DIRECTORY" || exit 1
+/bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] starting PPG Collector with $PYTHON_BINARY" >>"$LOG_FILE"
+STARTED_AT=$(/bin/date +%s)
+"$PYTHON_BINARY" "$PROJECT_DIRECTORY/启动采集界面.py" "$@" >>"$LOG_FILE" 2>&1
+EXIT_STATUS=$?
+RUNTIME=$(( $(/bin/date +%s) - STARTED_AT ))
+/bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] exited with status $EXIT_STATUS after ${RUNTIME}s" >>"$LOG_FILE"
+
+# Only a crash *during startup* is worth an alert. A non-zero code after the
+# app ran for a while just means it was closed or replaced by a new instance.
+if [[ $EXIT_STATUS -ne 0 && $RUNTIME -lt 10 ]]; then
+  /usr/bin/osascript -e 'display dialog "程序启动失败。错误详情已保存到：~/Library/Logs/PPGCollector/launch.log" with title "PPG采集控制台无法启动" buttons {"确定"} default button "确定" with icon stop'
+fi
+
+exit $EXIT_STATUS

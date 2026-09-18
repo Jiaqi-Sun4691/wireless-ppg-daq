@@ -1,0 +1,25 @@
+# ---- 实验数据：绝不入库 ----
+# 采集结果含被试姓名与生理信号，一旦推上去就留在 git 历史里清不掉。
+*.csv
+*.mp4
+session.json
+PPG Data/
+采集到成品数据/
+采集数据/
+data/
+
+# ---- 生成物 ----
+# 注入了某台 Master 真实 MAC 的固件副本，每次烧录自动重建
+已注入MAC的固件/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 缓存 / 系统 ----
+.matplotlib_cache/
+.DS_Store
+*.log

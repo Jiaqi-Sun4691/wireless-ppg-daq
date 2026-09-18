@@ -1,0 +1,196 @@
+"""端到端自检：不接硬件，把一段 16 列数据当作 Master 输出回放进 GUI。
+
+需要有显示器（会真的建一个 Tk 窗口）。跑法：
+
+    PYTHONPATH=. python3 tests/gui_smoke.py
+
+覆盖 test_core.py 覆盖不到的那一半：串口事件 → 解析 → 曲线 → 录制这条
+完整链路，以及开始采集前的姓名确认弹窗。
+
+各步骤是用 after() 排进 mainloop 的，不能改成 root.update() 循环：界面每
+35 ms 就重新排一次事件轮询，一轮如果跑满 35 ms，update() 里永远有到期的
+定时器，就再也退不出来了。
+"""
+
+from __future__ import annotations
+
+import csv
+import math
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import tkinter as tk
+
+
+PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
+os.environ.setdefault("MPLCONFIGDIR", str(PROJECT_DIRECTORY / ".matplotlib_cache"))
+
+from ppg_collector import app as app_module  # noqa: E402
+from ppg_collector.app import PPGCollectorApp  # noqa: E402
+from ppg_collector.firmware import AUTO_BOARD_SELECTION  # noqa: E402
+from ppg_collector.protocol import DATA_COLUMNS  # noqa: E402
+
+EXPECTED_TABS = ["采集", "串口与日志", "数据文件", "固件烧录", "设置"]
+EXPECTED_HEADER = [
+    "timestamp(ms)",
+    "finger",
+    "wheel_ax", "wheel_ay", "wheel_az",
+    "wheel_gx", "wheel_gy", "wheel_gz",
+    "system_time",
+    "driver_name", "other_name",
+]
+
+
+def write_replay_source(directory: Path) -> Path:
+    """一段 16 列数据，格式与 Master 实际输出一致，只是波形是算出来的。
+
+    它只负责把行喂进串口事件队列，本身不参与断言；被检查的是 GUI 自己
+    写出来的那份 CSV。长度要够跑完整个自检——回放一放完就会发出断开事件，
+    后面的录制步骤就无从谈起了。
+    """
+    path = directory / "replay_source.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(DATA_COLUMNS)
+        for index in range(2400):
+            phase = index / 12.0
+            ppg = 2048 + int(600 * math.sin(phase))
+            imu = [int(1000 * math.sin(phase + axis)) for axis in range(6)]
+            writer.writerow([index * 48, ppg, ppg - 40, ppg + 55, *imu, *imu])
+    return path
+
+
+def check_layout(app: PPGCollectorApp) -> None:
+    tabs = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
+    assert tabs == EXPECTED_TABS, f"标签页变了：{tabs}"
+    assert set(app.plot_lines) == {"finger", "wrist", "other"}
+    assert len(app.plot_lines["finger"].get_ydata()) == app.ORIGINAL_PLOT_WINDOW
+    assert tuple(round(v) for v in app.ppg_axis.get_ylim()) == (0, 4095)
+    assert app.plot_status_text.get_text() == "Status: PAUSED"
+    assert len(app.firmware_tree.get_children()) == 5
+    assert app.firmware_fqbn_var.get() == AUTO_BOARD_SELECTION
+    assert not hasattr(app, "demo_button"), "演示模式应该已经彻底移除"
+
+
+def check_firmware_wizard(app: PPGCollectorApp) -> None:
+    """读到 Master MAC 之后，后续每一步的提示里都要带上它。"""
+    app.master_mac_var.set("AA:BB:CC:DD:EE:FF")
+    app.firmware_step_index = 1
+    app._update_firmware_instruction()
+    assert "AA:BB:CC:DD:EE:FF" in app.firmware_instruction_var.get()
+    app._firmware_reset_wizard()
+
+
+def check_stream(app: PPGCollectorApp) -> None:
+    assert app.connected, "回放没有连上"
+    assert app.total_samples >= 15, f"只收到 {app.total_samples} 个样本"
+    assert len(app.plot_timestamps) == app.total_samples
+    assert app.corr_fw_var.get() != "N/A", "没有算出实时相关性"
+    assert "," in app.console_text.get("1.0", "end"), "原始数据行没有进串口页"
+
+
+def start_recording(app: PPGCollectorApp, workspace: Path) -> None:
+    app.output_var.set(str(workspace / "out"))
+    app.prefix_var.set("gui_smoke")
+    app.video_var.set(False)              # 免掉对 FFmpeg 的依赖
+    app.driver_var.set("张三")
+    app.other_person_var.set("李四")
+    for device_id, variable in app.device_selection_vars.items():
+        variable.set(device_id in ("finger", "wheel"))
+    app._update_device_selection_summary()
+
+    asked: list[str] = []
+    original = app_module.messagebox.askyesno
+    app_module.messagebox.askyesno = lambda title, message, **kw: (
+        asked.append(f"{title}\n{message}") or True
+    )
+    try:
+        app._start_recording()
+    finally:
+        app_module.messagebox.askyesno = original
+
+    assert asked, "开始采集前没有弹确认框"
+    assert "张三" in asked[0] and "李四" in asked[0], f"确认框没显示姓名：{asked[0]}"
+    assert app.plot_status_text.get_text() == "Status: RECORDING"
+    assert str(app.device_cards["finger"].selection_check.cget("state")) == "disabled"
+
+
+def finish_recording(app: PPGCollectorApp, summary: dict) -> None:
+    app._stop_recording()
+    assert app.plot_status_text.get_text() == "Status: PAUSED"
+    assert str(app.device_cards["finger"].selection_check.cget("state")) == "normal"
+
+    csv_path = app.recorder.csv_path
+    assert csv_path is not None and csv_path.exists(), "CSV 没有保存"
+    # 一次采集 = 一个同名文件夹，行车视频和笔记都能丢进去。
+    session_directory = csv_path.parent
+    assert session_directory.name == csv_path.stem, "CSV 没有放进同名的会话文件夹"
+    assert (session_directory / "session.json").is_file(), "session.json 没有写出来"
+
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert len(rows) >= 10, f"只写了 {len(rows) - 1} 行"
+    assert rows[0] == EXPECTED_HEADER, f"表头没有跟随设备勾选：{rows[0]}"
+    # 姓名要每行都有——单个 CSV 分享出去必须自带身份信息。
+    for row in rows[1:]:
+        assert row[-2:] == ["张三", "李四"], f"某行缺姓名：{row}"
+
+    summary["samples"] = app.total_samples
+    summary["rows"] = len(rows) - 1
+
+
+def main() -> None:
+    root = tk.Tk()
+    app = PPGCollectorApp(root)
+    workspace = Path(tempfile.mkdtemp(prefix="ppg_smoke_"))
+    failures: list[BaseException] = []
+    summary: dict = {}
+
+    # (开始前等待毫秒, 这一步做什么)
+    steps = [
+        (200, lambda: check_layout(app)),
+        (0, lambda: check_firmware_wizard(app)),
+        (0, lambda: app._start_replay(str(write_replay_source(workspace)), speed=10.0)),
+        (2000, lambda: check_stream(app)),
+        (0, lambda: start_recording(app, workspace)),
+        (1500, lambda: finish_recording(app, summary)),
+    ]
+
+    def shutdown() -> None:
+        if app.worker is not None:
+            app.worker.stop()
+            app.worker = None
+        root.quit()
+
+    def advance(index: int) -> None:
+        if index >= len(steps):
+            shutdown()
+            return
+        delay, action = steps[index]
+
+        def fire() -> None:
+            try:
+                action()
+            except BaseException as exc:      # 断言失败也要先把窗口收掉
+                failures.append(exc)
+                shutdown()
+                return
+            advance(index + 1)
+
+        root.after(delay, fire)
+
+    advance(0)
+    # 卡住的话要自己失败，不能挂在那儿等人来关窗口。
+    root.after(60_000, lambda: (failures.append(TimeoutError("自检超时")), shutdown()))
+    root.mainloop()
+    root.destroy()
+    shutil.rmtree(workspace, ignore_errors=True)
+
+    if failures:
+        raise failures[0]
+    print(f"GUI 自检通过：收到 {summary['samples']} 个样本，写入 {summary['rows']} 行 CSV")
+
+
+if __name__ == "__main__":
+    main()

@@ -146,6 +146,13 @@ python3 -m pip install -r requirements.txt
 >
 > 用 `git clone` 的话没有这个问题。
 
+在 macOS 上还有一点必须注意：python.org 的 `python3` 是 x86_64 + arm64 的
+**通用二进制**，而 numpy 这类带原生扩展的包往往只装了本机架构那一份。
+Apple 芯片上如果让它跑成 x86_64，`import numpy` 就会报
+`incompatible architecture`。所以启动器会用 `arch` 显式钉到本机架构上
+——判断硬件用的是 `sysctl hw.optional.arm64` 而不是 `uname -m`，后者在被
+Rosetta 转译的进程里报的是进程架构，照着它钉正好钉在坏的那一半上。
+
 前两种会自动去找一个能用的 Python：依次试 `PPG_PYTHON` 环境变量、
 python.org 的 3.14→3.10、Homebrew、`/usr/local/bin`、`PATH` 里的 `python3`，
 挑第一个同时装齐了 tkinter / pyserial / numpy / matplotlib 的。

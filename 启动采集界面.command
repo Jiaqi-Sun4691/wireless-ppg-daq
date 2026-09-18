@@ -12,19 +12,15 @@ if ! find_python; then
   exit 1
 fi
 
-STALE_PIDS=$(/usr/bin/pgrep -f "启动采集界面.py" 2>/dev/null)
-if [[ -n "$STALE_PIDS" ]]; then
-  echo "正在结束残留的旧实例…"
-  /bin/kill $STALE_PIDS 2>/dev/null
-  /bin/sleep 1
-  STILL=$(/usr/bin/pgrep -f "启动采集界面.py" 2>/dev/null)
-  [[ -n "$STILL" ]] && /bin/kill -9 $STILL 2>/dev/null
-fi
+ppg_stop_previous
 
 export MPLCONFIGDIR="$HOME/Library/Caches/PPGCollector/matplotlib"
 /bin/mkdir -p "$MPLCONFIGDIR"
 STARTED_AT=$(/bin/date +%s)
-"$PYTHON_BINARY" "启动采集界面.py"
+"${PPG_ARCH_PREFIX[@]}" "$PYTHON_BINARY" "启动采集界面.py" &
+PYTHON_PID=$!
+ppg_remember "$PYTHON_PID"
+wait "$PYTHON_PID"
 EXIT_STATUS=$?
 RUNTIME=$(( $(/bin/date +%s) - STARTED_AT ))
 

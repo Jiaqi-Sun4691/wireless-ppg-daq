@@ -16,14 +16,7 @@ if ! find_python; then
 fi
 
 # 结束可能残留的旧实例：否则双击只会激活一个已卡死的旧窗口，看起来像“没反应”。
-STALE_PIDS=$(/usr/bin/pgrep -f "启动采集界面.py" 2>/dev/null)
-if [[ -n "$STALE_PIDS" ]]; then
-  /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] closing stale instance: $STALE_PIDS" >>"$LOG_FILE" 2>/dev/null
-  /bin/kill $STALE_PIDS 2>/dev/null
-  /bin/sleep 1
-  STILL=$(/usr/bin/pgrep -f "启动采集界面.py" 2>/dev/null)
-  [[ -n "$STILL" ]] && /bin/kill -9 $STILL 2>/dev/null
-fi
+ppg_stop_previous
 
 export MPLCONFIGDIR="$CACHE_DIRECTORY"
 export PYTHONPATH="$PROJECT_DIRECTORY"
@@ -31,7 +24,10 @@ export PYTHONPATH="$PROJECT_DIRECTORY"
 cd "$PROJECT_DIRECTORY" || exit 1
 /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] starting PPG Collector with $PYTHON_BINARY" >>"$LOG_FILE"
 STARTED_AT=$(/bin/date +%s)
-"$PYTHON_BINARY" "$PROJECT_DIRECTORY/启动采集界面.py" "$@" >>"$LOG_FILE" 2>&1
+"${PPG_ARCH_PREFIX[@]}" "$PYTHON_BINARY" "$PROJECT_DIRECTORY/启动采集界面.py" "$@" >>"$LOG_FILE" 2>&1 &
+PYTHON_PID=$!
+ppg_remember "$PYTHON_PID"
+wait "$PYTHON_PID"
 EXIT_STATUS=$?
 RUNTIME=$(( $(/bin/date +%s) - STARTED_AT ))
 /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] exited with status $EXIT_STATUS after ${RUNTIME}s" >>"$LOG_FILE"

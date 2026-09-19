@@ -27,7 +27,11 @@ from ppg_collector.monitor import (
 from ppg_collector.protocol import LineKind, csv_columns_for_devices, parse_serial_line
 from ppg_collector.library import scan_sessions
 from ppg_collector.plot import MAPPING_SUFFIX, REBUILT_SUFFIX
-from ppg_collector.rebuild import FPS as REBUILD_FPS, load_session
+from ppg_collector.rebuild import (
+    FPS as REBUILD_FPS,
+    OUTPUT_CODEC_OPTIONS,
+    load_session,
+)
 from ppg_collector.recorder import SessionRecorder, safe_prefix
 from ppg_collector.settings import (
     AppSettings,
@@ -403,6 +407,38 @@ class RebuildTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 load_session(path)
             self.assertIn("wrist", str(caught.exception))
+
+
+class EncodingCompatibilityTests(unittest.TestCase):
+    """守住一个踩过的坑：重建出来的 MP4 必须是 QuickTime 能播的。
+
+    曾经把 pix_fmt 改成 yuv444p，因为细线条画质确实好得多。但那会走
+    High 4:4:4 Predictive profile，QuickTime Player 直接拒绝播放
+    （AVAsset.isPlayable 为 false），界面上"播放重建录屏"就打不开了。
+    当时用 AVAssetImageGenerator 取帧验证过"能解码"——那条路比播放宽松，
+    结论是错的。
+    """
+
+    # QuickTime / AVFoundation 能播的像素格式。要加新的先用
+    # AVAsset.isPlayable 验，别用取帧验。
+    PLAYABLE = {"yuv420p"}
+
+    def test_rebuild_encodes_to_a_quicktime_playable_pixel_format(self) -> None:
+        options = list(OUTPUT_CODEC_OPTIONS)
+        chosen = options[options.index("-pix_fmt") + 1]
+        self.assertIn(
+            chosen,
+            self.PLAYABLE,
+            f"{chosen} 不在已验证可播的格式里；yuv444p 画质更好但 QuickTime 打不开",
+        )
+
+    def test_encoder_command_uses_that_pixel_format(self) -> None:
+        """常量要真的被用上，不然上面那条守了个寂寞。"""
+        import inspect
+
+        from ppg_collector import rebuild
+
+        self.assertIn("OUTPUT_CODEC_OPTIONS", inspect.getsource(rebuild._encoder))
 
 
 class LibraryTests(unittest.TestCase):

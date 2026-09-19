@@ -49,6 +49,17 @@ from .recorder import configure_ffmpeg
 FPS = 20
 # 分段少于这个帧数就不值得单起一个进程（启动 + 拼接的开销更大）。
 MIN_FRAMES_PER_WORKER = 400
+
+# 输出编码参数。提成常量是为了让测试能直接读，不必去解析源码——命令里有两个
+# -pix_fmt（输入是 rgba），解析很容易抓错那一个。
+#
+# pix_fmt 必须留在 yuv420p。yuv444p 画质确实好得多（细线条不糊，PSNR
+# 37.5 → 52.1 dB），但它走 High 4:4:4 Predictive profile，QuickTime Player
+# 直接拒绝播放，AVAsset.isPlayable 返回 false。当初是用
+# AVAssetImageGenerator 取帧验证"能解码"才误判的——取帧那条路比播放宽松，
+# 别再照那个结论改回去。
+# CRF 18 比默认的 23 略好，且不影响兼容性。
+OUTPUT_CODEC_OPTIONS = ("-vcodec", "h264", "-crf", "18", "-pix_fmt", "yuv420p")
 # 界面里那张图被 Tk 按窗口拉伸到 1560x550，历史录屏都是这个尺寸，沿用它。
 WIDTH, HEIGHT, DPI = 1560, 550, 120
 
@@ -114,13 +125,7 @@ def _encoder(ffmpeg_path: str, out_path: Path, title: str) -> subprocess.Popen:
         ffmpeg_path, "-f", "rawvideo", "-vcodec", "rawvideo",
         "-s", f"{WIDTH}x{HEIGHT}", "-pix_fmt", "rgba",
         "-framerate", str(FPS), "-loglevel", "error", "-i", "pipe:",
-        # 画面是细线条加文字，4:2:0 色度抽样对它伤害最大：实测把抽样关掉
-        # （yuv444p）PSNR 从 37.5 升到 52.1 dB，而文件反而更小——4:2:0 糊
-        # 掉彩色线产生的伪影本身就很占码率。单纯降 CRF 只换来 0.3 dB，说明
-        # 瓶颈一直在色度而不在量化。
-        # High 4:4:4 Predictive 这个 profile 已验证 macOS AVFoundation
-        # （QuickTime、访达预览）能正常解码。
-        "-vcodec", "h264", "-crf", "18", "-pix_fmt", "yuv444p",
+        *OUTPUT_CODEC_OPTIONS,
         "-metadata", "title=PPG IMU Plot Recording (rebuilt from CSV)",
         "-metadata", f"comment=rebuilt from {title}",
         "-y", str(out_path),

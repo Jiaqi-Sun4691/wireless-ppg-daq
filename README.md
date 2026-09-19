@@ -444,6 +444,16 @@ frame,video_seconds,timestamp(ms),system_time
 
 留白而不是补 0 是有意的：0 看着像信号掉到底，标注时会被当成真事件。
 
+### 编码格式为什么不能动
+
+重建出来的 MP4 固定用 `yuv420p`。试过 `yuv444p`——对这种细线条画面画质
+确实好得多（PSNR 37.5 → 52.1 dB，文件还更小，因为 4:2:0 糊掉彩色线产生的
+伪影本身就很占码率），但它走的是 **High 4:4:4 Predictive** profile，
+**QuickTime Player 直接拒绝播放**，界面上「播放重建录屏」就打不开了。
+
+验证「能不能播」要用 `AVAsset.isPlayable`。用 `AVAssetImageGenerator`
+取一帧成功**不代表能播**——取帧那条路宽松得多，当初就是照它误判的。
+
 ### FFmpeg
 
 生成录屏要 FFmpeg：
@@ -593,7 +603,7 @@ Master 每 500 ms 才发一条 `@STATUS`，所以两条状态之间，任何一�
 ## 自检与测试
 
 ```bash
-# 46 个单元测试：协议解析、健康判定、阈值下限、录制、固件参数、设置可移植性
+# 48 个单元测试：协议解析、健康判定、阈值下限、录制、固件参数、设置可移植性
 PYTHONPATH=. python3 -m unittest discover -s tests
 
 # 端到端自检：不接硬件，把一段 16 列数据当作 Master 输出回放进真实界面，
@@ -659,7 +669,7 @@ python3 启动采集界面.py --smoke-test
 │   ├── 02..05-*-monitor/
 │   └── 接线说明.md           #   ★ 接线看这个
 ├── tests/
-│   ├── test_core.py          #   46 个单元测试
+│   ├── test_core.py          #   48 个单元测试
 │   └── gui_smoke.py          #   端到端自检
 ├── sounds/alarm_siren.wav    # 3 级告警的连续警笛
 ├── 重建录屏.py               # 批量补齐波形录屏（命令行入口）

@@ -24,6 +24,10 @@ Y_LIMITS = (0, 4095)         # PPG 是 12 位 ADC
 # 的那边也要认得它——它同样是 .csv，不排除掉就会被当成又一次采集列出来。
 MAPPING_SUFFIX = "_帧时间对照.csv"
 
+# 重建出来的录屏单独占一个文件名，不覆盖采集时实时录的那份。两者内容不同
+# （实时的掉帧、播放偏快；重建的时间轴准），都留着让人自己挑。
+REBUILT_SUFFIX = "_重建.mp4"
+
 CHANNELS: tuple[tuple[str, str, str], ...] = (
     ("finger", "Finger PPG", "tab:blue"),
     ("wrist", "Wrist PPG", "tab:orange"),

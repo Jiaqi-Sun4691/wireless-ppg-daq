@@ -26,7 +26,7 @@ from ppg_collector.monitor import (
 )
 from ppg_collector.protocol import LineKind, csv_columns_for_devices, parse_serial_line
 from ppg_collector.library import scan_sessions
-from ppg_collector.plot import MAPPING_SUFFIX
+from ppg_collector.plot import MAPPING_SUFFIX, REBUILT_SUFFIX
 from ppg_collector.rebuild import FPS as REBUILD_FPS, load_session
 from ppg_collector.recorder import SessionRecorder, safe_prefix
 from ppg_collector.settings import (
@@ -408,53 +408,80 @@ class RebuildTests(unittest.TestCase):
 class LibraryTests(unittest.TestCase):
     """扫描历史采集：区分实时录屏和事后重建。"""
 
-    def _session(self, root: Path, stamp: str, video: bool, mapping: bool) -> Path:
+    def _session(self, root: Path, stamp: str, live: bool, rebuilt: bool) -> Path:
         folder = root / f"ppg_imu_data_{stamp}"
         folder.mkdir()
-        (folder / f"ppg_imu_data_{stamp}.csv").write_text(
+        stem = f"ppg_imu_data_{stamp}"
+        (folder / f"{stem}.csv").write_text(
             "timestamp(ms),finger,system_time\n0,2000,x\n48,2001,x\n", encoding="utf-8"
         )
-        if video:
-            (folder / f"ppg_imu_data_{stamp}.mp4").write_bytes(b"x" * 64)
-        if mapping:
-            (folder / f"ppg_imu_data_{stamp}{MAPPING_SUFFIX}").write_text(
+        if live:
+            (folder / f"{stem}.mp4").write_bytes(b"x" * 64)
+        if rebuilt:
+            (folder / f"{stem}{REBUILT_SUFFIX}").write_bytes(b"x" * 128)
+            (folder / f"{stem}{REBUILT_SUFFIX[:-4]}{MAPPING_SUFFIX}").write_text(
                 "frame,video_seconds,timestamp(ms),system_time\n0,0.0,0,x\n",
                 encoding="utf-8",
             )
         return folder
 
-    def test_rebuilt_and_live_recordings_are_told_apart(self) -> None:
+    def test_live_and_rebuilt_recordings_coexist(self) -> None:
+        """两份是不同的文件，重建不覆盖实时录的那份。"""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._session(root, "2026-09-19_10-00-00", video=True, mapping=True)
-            self._session(root, "2026-09-19_11-00-00", video=True, mapping=False)
-            self._session(root, "2026-09-19_12-00-00", video=False, mapping=False)
+            self._session(root, "2026-09-19_10-00-00", live=True, rebuilt=True)
+            self._session(root, "2026-09-19_11-00-00", live=True, rebuilt=False)
+            self._session(root, "2026-09-19_12-00-00", live=False, rebuilt=True)
+            self._session(root, "2026-09-19_13-00-00", live=False, rebuilt=False)
             found = {s.csv_path.parent.name: s for s in scan_sessions(root)}
-            self.assertEqual(len(found), 3)
-            rebuilt = found["ppg_imu_data_2026-09-19_10-00-00"]
-            live = found["ppg_imu_data_2026-09-19_11-00-00"]
-            none = found["ppg_imu_data_2026-09-19_12-00-00"]
-            self.assertTrue(rebuilt.is_rebuilt)
-            self.assertEqual(rebuilt.rebuilt_text, "是")
-            self.assertFalse(live.is_rebuilt)
-            self.assertEqual(live.rebuilt_text, "—")
-            self.assertEqual(none.rebuilt_text, "—")
+            self.assertEqual(len(found), 4)
+
+            both = found["ppg_imu_data_2026-09-19_10-00-00"]
+            self.assertIsNotNone(both.video_path)
+            self.assertIsNotNone(both.rebuilt_path)
+            self.assertNotEqual(both.video_path, both.rebuilt_path)
+            self.assertTrue(both.is_rebuilt)
+            self.assertEqual(both.rebuilt_text, "是")
+            # 两份都要算进占用空间。
+            self.assertEqual(both.video_bytes, 64 + 128)
+
+            live_only = found["ppg_imu_data_2026-09-19_11-00-00"]
+            self.assertIsNotNone(live_only.video_path)
+            self.assertIsNone(live_only.rebuilt_path)
+            self.assertEqual(live_only.rebuilt_text, "—")
+
+            rebuilt_only = found["ppg_imu_data_2026-09-19_12-00-00"]
+            self.assertIsNone(rebuilt_only.video_path)
+            self.assertIsNotNone(rebuilt_only.rebuilt_path)
+            self.assertEqual(rebuilt_only.rebuilt_text, "是")
+
+            self.assertEqual(found["ppg_imu_data_2026-09-19_13-00-00"].rebuilt_text, "—")
+
+    def test_rebuilt_video_is_not_mistaken_for_the_live_one(self) -> None:
+        # _重建.mp4 的时间戳和实时录的一样，按戳匹配会认错。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session(root, "2026-09-19_12-00-00", live=False, rebuilt=True)
+            session = scan_sessions(root)[0]
+            self.assertIsNone(session.video_path, "重建的那份被当成实时录屏了")
 
     def test_deleting_the_rebuilt_video_counts_as_never_rebuilt(self) -> None:
         # 用户明确要求：重建过又把文件删了，就该显示成没重建过。
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            folder = self._session(root, "2026-09-19_10-00-00", video=True, mapping=True)
-            next(folder.glob("*.mp4")).unlink()
+            folder = self._session(root, "2026-09-19_10-00-00", live=True, rebuilt=True)
+            next(folder.glob(f"*{REBUILT_SUFFIX}")).unlink()
             session = scan_sessions(root)[0]
             self.assertFalse(session.is_rebuilt)
             self.assertEqual(session.rebuilt_text, "—")
+            # 实时录的那份不受影响。
+            self.assertIsNotNone(session.video_path)
 
     def test_mapping_table_is_not_listed_as_its_own_session(self) -> None:
         # 对照表也是 .csv，早先它让每一次重建过的采集在列表里出现两次。
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._session(root, "2026-09-19_10-00-00", video=True, mapping=True)
+            self._session(root, "2026-09-19_10-00-00", live=True, rebuilt=True)
             self.assertEqual(len(scan_sessions(root)), 1)
 
 
@@ -464,14 +491,14 @@ class RebuildAvailabilityTests(unittest.TestCase):
     class _Fake:
         """够 _can_rebuild 用的最小 SessionFile 替身。"""
 
-        def __init__(self, columns, video=False, mapping=False):
+        def __init__(self, columns, video=False, rebuilt=False):
             self.columns = columns
             self.video_path = Path("v.mp4") if video else None
-            self.mapping_path = Path("m.csv") if mapping else None
+            self.rebuilt_path = Path("v_重建.mp4") if rebuilt else None
 
         @property
         def is_rebuilt(self):
-            return self.video_path is not None and self.mapping_path is not None
+            return self.rebuilt_path is not None
 
     FULL = ("timestamp(ms)", "finger", "wrist", "other", "system_time")
     PARTIAL = ("timestamp(ms)", "finger", "system_time")
@@ -490,7 +517,7 @@ class RebuildAvailabilityTests(unittest.TestCase):
 
     def test_already_rebuilt_can_be_rebuilt_again(self) -> None:
         # 允许，但界面会在确认框里问"已经重建过，要覆盖吗"。
-        self.assertTrue(self._can([self._Fake(self.FULL, video=True, mapping=True)]))
+        self.assertTrue(self._can([self._Fake(self.FULL, video=True, rebuilt=True)]))
 
     def test_partial_device_selection_cannot_draw_three_channels(self) -> None:
         self.assertFalse(self._can([self._Fake(self.PARTIAL)]))

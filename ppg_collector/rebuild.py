@@ -37,6 +37,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from .plot import (
     CHANNELS,
     MAPPING_SUFFIX,
+    REBUILT_SUFFIX,
     PLOT_WINDOW,
     SIM_WINDOW_MS,
     build_ppg_figure,
@@ -242,7 +243,8 @@ def rebuild_session(
     if timestamps.size < 2:
         raise ValueError(f"{csv_path.name} 只有 {timestamps.size} 行，没什么可画的")
 
-    out_path = out_path or csv_path.with_suffix(".mp4")
+    # 不写成 <stem>.mp4：那是采集时实时录屏的名字，重建不该把它覆盖掉。
+    out_path = out_path or csv_path.with_name(csv_path.stem + REBUILT_SUFFIX)
     span_ms = int(timestamps[-1] - timestamps[0])
     frame_count = max(1, int(span_ms / 1000 * FPS) + 1)
     started = time.monotonic()

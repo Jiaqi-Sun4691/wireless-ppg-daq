@@ -986,7 +986,10 @@ class PPGCollectorApp:
             label="打开 CSV", command=lambda: self._open_selected_session("csv")
         )
         self.files_menu.add_command(
-            label="播放录屏", command=lambda: self._open_selected_session("video")
+            label="播放实时录屏", command=lambda: self._open_selected_session("video")
+        )
+        self.files_menu.add_command(
+            label="播放重建录屏", command=lambda: self._open_selected_session("rebuilt")
         )
         self.files_menu.add_command(
             label="生成波形录屏", command=self._rebuild_selected_session
@@ -1020,12 +1023,20 @@ class PPGCollectorApp:
         self.files_open_csv_button.grid(row=0, column=1, padx=6)
         self.files_open_video_button = ttk.Button(
             actions,
-            text="播放录屏",
+            text="播放实时录屏",
             style="Secondary.TButton",
             command=lambda: self._open_selected_session("video"),
             state="disabled",
         )
         self.files_open_video_button.grid(row=0, column=2, padx=6)
+        self.files_open_rebuilt_button = ttk.Button(
+            actions,
+            text="播放重建录屏",
+            style="Secondary.TButton",
+            command=lambda: self._open_selected_session("rebuilt"),
+            state="disabled",
+        )
+        self.files_open_rebuilt_button.grid(row=0, column=3, padx=6)
         self.files_rebuild_button = ttk.Button(
             actions,
             text="生成波形录屏",
@@ -1033,7 +1044,7 @@ class PPGCollectorApp:
             command=self._rebuild_selected_session,
             state="disabled",
         )
-        self.files_rebuild_button.grid(row=0, column=3, padx=6)
+        self.files_rebuild_button.grid(row=0, column=4, padx=6)
         self.files_delete_button = ttk.Button(
             actions,
             text="删除这次采集",
@@ -1041,7 +1052,7 @@ class PPGCollectorApp:
             command=self._delete_selected_session,
             state="disabled",
         )
-        self.files_delete_button.grid(row=0, column=4, padx=(18, 0))
+        self.files_delete_button.grid(row=0, column=5, padx=(18, 0))
 
         tk.Label(
             page,
@@ -1087,9 +1098,10 @@ class PPGCollectorApp:
         FILES_MENU_REVEAL,
         FILES_MENU_CSV,
         FILES_MENU_VIDEO,
+        FILES_MENU_REBUILT_PLAY,
         FILES_MENU_REBUILD,
         FILES_MENU_DELETE,
-    ) = 0, 1, 2, 3, 5
+    ) = 0, 1, 2, 3, 4, 6
 
     def _update_files_menu(self) -> None:
         sessions = self._selected_sessions()
@@ -1099,6 +1111,10 @@ class PPGCollectorApp:
         self.files_menu.entryconfigure(self.FILES_MENU_CSV, state=single)
         self.files_menu.entryconfigure(
             self.FILES_MENU_VIDEO, state="normal" if has_video else "disabled"
+        )
+        has_rebuilt = len(sessions) == 1 and sessions[0].rebuilt_path is not None
+        self.files_menu.entryconfigure(
+            self.FILES_MENU_REBUILT_PLAY, state="normal" if has_rebuilt else "disabled"
         )
         self.files_menu.entryconfigure(
             self.FILES_MENU_REBUILD,
@@ -1125,6 +1141,10 @@ class PPGCollectorApp:
         )
         has_video = len(sessions) == 1 and sessions[0].video_path is not None
         self.files_open_video_button.configure(state="normal" if has_video else "disabled")
+        has_rebuilt = len(sessions) == 1 and sessions[0].rebuilt_path is not None
+        self.files_open_rebuilt_button.configure(
+            state="normal" if has_rebuilt else "disabled"
+        )
         self.files_rebuild_button.configure(
             state="normal" if self._can_rebuild(sessions) else "disabled"
         )
@@ -1194,7 +1214,11 @@ class PPGCollectorApp:
         session = self._selected_session()
         if session is None:
             return
-        target = session.csv_path if kind == "csv" else session.video_path
+        target = {
+            "csv": session.csv_path,
+            "video": session.video_path,
+            "rebuilt": session.rebuilt_path,
+        }[kind]
         if target is None or not target.exists():
             messagebox.showwarning("文件不存在", "这个文件已经不在磁盘上，请刷新列表。")
             self._refresh_files_list()
@@ -1231,12 +1255,12 @@ class PPGCollectorApp:
 
         # 渲染大约要采集时长的三分之一，值得先说一声再开始。
         minutes = session.row_count * 0.048 / 60
+        # 重建写的是 <名字>_重建.mp4，采集时实时录的那份不受影响，两份共存。
         if session.is_rebuilt:
-            existing = "\n这次已经重建过，重新生成会覆盖现有的 MP4。\n"
+            existing = "\n这次已经重建过，重新生成会覆盖上次重建的结果。\n"
         elif session.video_path is not None:
-            # 实时录的那份会被换掉，但它本来就是快放且时间轴不准的。
             existing = (
-                "\n这次有采集时实时录的 MP4，会被覆盖。\n"
+                "\n采集时实时录的那份会保留，重建结果另存一个文件。\n"
                 "实时录屏因为掉帧会比真实时间快，重建版时长与采集时长一致。\n"
             )
         else:

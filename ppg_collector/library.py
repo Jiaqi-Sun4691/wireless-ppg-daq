@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import re
 
-from .plot import MAPPING_SUFFIX
+from .plot import MAPPING_SUFFIX, REBUILT_SUFFIX
 from .protocol import DEVICE_LABELS, FIELD_DEVICE
 
 # ppg_imu_data_2026-08-18_15-30-00.csv / plot_recording_2026-08-18_15-30-00.mp4
@@ -25,18 +25,18 @@ class SessionFile:
     row_count: int
     columns: tuple[str, ...]
     meta: dict | None = None
+    rebuilt_path: Path | None = None
     mapping_path: Path | None = None
 
 
     @property
     def is_rebuilt(self) -> bool:
-        """这次的录屏是不是事后从 CSV 重建的。
+        """有没有用 CSV 重建过这次的波形录屏。
 
-        看的是帧时间对照表在不在——只有重建会生成它，实时录屏不会。
-        对照表和视频必须都还在才算数：视频被删掉之后，剩一张对照表没有
-        意义，应该显示成"没重建过"。
+        看的是重建出来的那个 MP4 还在不在——重建完又把它删了，就算没重建
+        过：列表要反映盘上现在有什么，而不是曾经做过什么。
         """
-        return self.video_path is not None and self.mapping_path is not None
+        return self.rebuilt_path is not None
 
     @property
     def rebuilt_text(self) -> str:
@@ -167,11 +167,12 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
 
     # Recordings now live in one folder per session; older ones sit flat in the
     # root. Scan both so existing data keeps showing up.
+    # 重建出来的那份单独挑出来——它和实时录的是两个文件，不能混成一个。
     videos: dict[str, Path] = {}
     for pattern in ("*.mp4", "*/*.mp4"):
         for video in directory.glob(pattern):
             stamp = stamp_of(video)
-            if stamp:
+            if stamp and not video.name.endswith(REBUILT_SUFFIX):
                 videos.setdefault(stamp, video)
 
     # 帧时间对照表也是 .csv，但它不是一次采集——不排除掉，重建过的采集会
@@ -187,7 +188,8 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
         if stamp:
             # Prefer a video sitting beside the CSV in its own session folder.
             same_folder = [
-                v for v in csv_file.parent.glob("*.mp4") if stamp_of(v) == stamp
+                v for v in csv_file.parent.glob("*.mp4")
+                if stamp_of(v) == stamp and not v.name.endswith(REBUILT_SUFFIX)
             ]
             video = same_folder[0] if same_folder else videos.get(stamp)
         try:
@@ -200,10 +202,18 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
                 video_size = video.stat().st_size
             except OSError:
                 video = None
-        # 帧时间对照表：只有事后重建会生成，实时录屏不会。
+        # 重建出来的那份，以及它附带的帧时间对照表。
+        rebuilt = csv_file.with_name(csv_file.stem + REBUILT_SUFFIX)
+        if rebuilt.is_file():
+            try:
+                video_size += rebuilt.stat().st_size
+            except OSError:
+                rebuilt = None
+        else:
+            rebuilt = None
         mapping = None
-        if video is not None:
-            candidate = video.with_name(video.stem + MAPPING_SUFFIX)
+        if rebuilt is not None:
+            candidate = rebuilt.with_name(rebuilt.stem + MAPPING_SUFFIX)
             if candidate.is_file():
                 mapping = candidate
 
@@ -223,6 +233,7 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
                 row_count=count_data_rows(csv_file),
                 columns=read_columns(csv_file),
                 meta=read_metadata(csv_file.parent),
+                rebuilt_path=rebuilt,
                 mapping_path=mapping,
             )
         )

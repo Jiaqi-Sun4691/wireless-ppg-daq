@@ -949,7 +949,7 @@ class PPGCollectorApp:
             command=self._open_output_folder,
         ).grid(row=0, column=1, padx=(8, 0))
 
-        columns = ("recorded", "subject", "rows", "duration", "size", "cols", "devices", "video")
+        columns = ("recorded", "subject", "rows", "duration", "size", "cols", "devices", "video", "rebuilt")
         headings = {
             "recorded": "采集时间",
             "subject": "驾驶者 / 对照者",
@@ -959,10 +959,11 @@ class PPGCollectorApp:
             "cols": "CSV 列",
             "devices": "设备",
             "video": "录屏",
+            "rebuilt": "已重建",
         }
         widths = {
             "recorded": 150, "subject": 160, "rows": 80, "duration": 70, "size": 80,
-            "cols": 60, "devices": 300, "video": 60,
+            "cols": 60, "devices": 260, "video": 60, "rebuilt": 60,
         }
         # extended：可以按住 shift / cmd 多选，一次删掉好几次采集。
         self.files_tree = ttk.Treeview(
@@ -1169,6 +1170,7 @@ class PPGCollectorApp:
                     str(len(session.columns)),
                     session.device_text,
                     "有" if session.video_path is not None else "—",
+                    session.rebuilt_text,
                 ),
             )
         if sessions:

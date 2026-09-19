@@ -20,6 +20,10 @@ PLOT_WINDOW = 400            # 曲线上保留多少个采样点
 SIM_WINDOW_MS = 3000         # 相关性用多长的滑窗
 Y_LIMITS = (0, 4095)         # PPG 是 12 位 ADC
 
+# 重建录屏时附带生成的帧号↔时间戳对照表。名字定义在这里，因为扫描历史采集
+# 的那边也要认得它——它同样是 .csv，不排除掉就会被当成又一次采集列出来。
+MAPPING_SUFFIX = "_帧时间对照.csv"
+
 CHANNELS: tuple[tuple[str, str, str], ...] = (
     ("finger", "Finger PPG", "tab:blue"),
     ("wrist", "Wrist PPG", "tab:orange"),

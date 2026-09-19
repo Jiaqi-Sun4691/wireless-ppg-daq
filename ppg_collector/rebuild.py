@@ -36,6 +36,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from .plot import (
     CHANNELS,
+    MAPPING_SUFFIX,
     PLOT_WINDOW,
     SIM_WINDOW_MS,
     build_ppg_figure,
@@ -112,7 +113,13 @@ def _encoder(ffmpeg_path: str, out_path: Path, title: str) -> subprocess.Popen:
         ffmpeg_path, "-f", "rawvideo", "-vcodec", "rawvideo",
         "-s", f"{WIDTH}x{HEIGHT}", "-pix_fmt", "rgba",
         "-framerate", str(FPS), "-loglevel", "error", "-i", "pipe:",
-        "-vcodec", "h264", "-pix_fmt", "yuv420p",
+        # 画面是细线条加文字，4:2:0 色度抽样对它伤害最大：实测把抽样关掉
+        # （yuv444p）PSNR 从 37.5 升到 52.1 dB，而文件反而更小——4:2:0 糊
+        # 掉彩色线产生的伪影本身就很占码率。单纯降 CRF 只换来 0.3 dB，说明
+        # 瓶颈一直在色度而不在量化。
+        # High 4:4:4 Predictive 这个 profile 已验证 macOS AVFoundation
+        # （QuickTime、访达预览）能正常解码。
+        "-vcodec", "h264", "-crf", "18", "-pix_fmt", "yuv444p",
         "-metadata", "title=PPG IMU Plot Recording (rebuilt from CSV)",
         "-metadata", f"comment=rebuilt from {title}",
         "-y", str(out_path),
@@ -265,7 +272,7 @@ def rebuild_session(
     partial.replace(out_path)
 
     # 帧号 ↔ 时间戳对照表：标注时不用猜某一帧是几点。
-    mapping_path = out_path.with_name(out_path.stem + "_帧时间对照.csv")
+    mapping_path = out_path.with_name(out_path.stem + MAPPING_SUFFIX)
     with mapping_path.open("w", newline="", encoding="utf-8") as handle:
         writer_csv = csv.writer(handle)
         writer_csv.writerow(["frame", "video_seconds", "timestamp(ms)", "system_time"])

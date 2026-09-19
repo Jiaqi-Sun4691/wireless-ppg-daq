@@ -25,6 +25,8 @@ from ppg_collector.monitor import (
     battery_percentage,
 )
 from ppg_collector.protocol import LineKind, csv_columns_for_devices, parse_serial_line
+from ppg_collector.library import scan_sessions
+from ppg_collector.plot import MAPPING_SUFFIX
 from ppg_collector.rebuild import FPS as REBUILD_FPS, load_session
 from ppg_collector.recorder import SessionRecorder, safe_prefix
 from ppg_collector.settings import (
@@ -401,6 +403,59 @@ class RebuildTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 load_session(path)
             self.assertIn("wrist", str(caught.exception))
+
+
+class LibraryTests(unittest.TestCase):
+    """扫描历史采集：区分实时录屏和事后重建。"""
+
+    def _session(self, root: Path, stamp: str, video: bool, mapping: bool) -> Path:
+        folder = root / f"ppg_imu_data_{stamp}"
+        folder.mkdir()
+        (folder / f"ppg_imu_data_{stamp}.csv").write_text(
+            "timestamp(ms),finger,system_time\n0,2000,x\n48,2001,x\n", encoding="utf-8"
+        )
+        if video:
+            (folder / f"ppg_imu_data_{stamp}.mp4").write_bytes(b"x" * 64)
+        if mapping:
+            (folder / f"ppg_imu_data_{stamp}{MAPPING_SUFFIX}").write_text(
+                "frame,video_seconds,timestamp(ms),system_time\n0,0.0,0,x\n",
+                encoding="utf-8",
+            )
+        return folder
+
+    def test_rebuilt_and_live_recordings_are_told_apart(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session(root, "2026-09-19_10-00-00", video=True, mapping=True)
+            self._session(root, "2026-09-19_11-00-00", video=True, mapping=False)
+            self._session(root, "2026-09-19_12-00-00", video=False, mapping=False)
+            found = {s.csv_path.parent.name: s for s in scan_sessions(root)}
+            self.assertEqual(len(found), 3)
+            rebuilt = found["ppg_imu_data_2026-09-19_10-00-00"]
+            live = found["ppg_imu_data_2026-09-19_11-00-00"]
+            none = found["ppg_imu_data_2026-09-19_12-00-00"]
+            self.assertTrue(rebuilt.is_rebuilt)
+            self.assertEqual(rebuilt.rebuilt_text, "是")
+            self.assertFalse(live.is_rebuilt)
+            self.assertEqual(live.rebuilt_text, "—")
+            self.assertEqual(none.rebuilt_text, "—")
+
+    def test_deleting_the_rebuilt_video_counts_as_never_rebuilt(self) -> None:
+        # 用户明确要求：重建过又把文件删了，就该显示成没重建过。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = self._session(root, "2026-09-19_10-00-00", video=True, mapping=True)
+            next(folder.glob("*.mp4")).unlink()
+            session = scan_sessions(root)[0]
+            self.assertFalse(session.is_rebuilt)
+            self.assertEqual(session.rebuilt_text, "—")
+
+    def test_mapping_table_is_not_listed_as_its_own_session(self) -> None:
+        # 对照表也是 .csv，早先它让每一次重建过的采集在列表里出现两次。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session(root, "2026-09-19_10-00-00", video=True, mapping=True)
+            self.assertEqual(len(scan_sessions(root)), 1)
 
 
 class SettingsTests(unittest.TestCase):

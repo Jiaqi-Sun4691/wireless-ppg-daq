@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import re
 
+from .plot import MAPPING_SUFFIX
 from .protocol import DEVICE_LABELS, FIELD_DEVICE
 
 # ppg_imu_data_2026-08-18_15-30-00.csv / plot_recording_2026-08-18_15-30-00.mp4
@@ -24,7 +25,27 @@ class SessionFile:
     row_count: int
     columns: tuple[str, ...]
     meta: dict | None = None
+    mapping_path: Path | None = None
 
+
+    @property
+    def is_rebuilt(self) -> bool:
+        """这次的录屏是不是事后从 CSV 重建的。
+
+        看的是帧时间对照表在不在——只有重建会生成它，实时录屏不会。
+        对照表和视频必须都还在才算数：视频被删掉之后，剩一张对照表没有
+        意义，应该显示成"没重建过"。
+        """
+        return self.video_path is not None and self.mapping_path is not None
+
+    @property
+    def rebuilt_text(self) -> str:
+        """这次的录屏有没有用 CSV 重建过。
+
+        重建完又把视频删掉的，算没重建过——列表要反映现在盘上有什么，
+        而不是"曾经做过什么"。
+        """
+        return "是" if self.is_rebuilt else "—"
 
     @property
     def folder(self) -> Path:
@@ -153,7 +174,12 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
             if stamp:
                 videos.setdefault(stamp, video)
 
-    csv_files = list(directory.glob("*.csv")) + list(directory.glob("*/*.csv"))
+    # 帧时间对照表也是 .csv，但它不是一次采集——不排除掉，重建过的采集会
+    # 在列表里出现两次。
+    csv_files = [
+        path for path in list(directory.glob("*.csv")) + list(directory.glob("*/*.csv"))
+        if not path.name.endswith(MAPPING_SUFFIX)
+    ]
     sessions: list[SessionFile] = []
     for csv_file in csv_files:
         stamp = stamp_of(csv_file)
@@ -174,6 +200,13 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
                 video_size = video.stat().st_size
             except OSError:
                 video = None
+        # 帧时间对照表：只有事后重建会生成，实时录屏不会。
+        mapping = None
+        if video is not None:
+            candidate = video.with_name(video.stem + MAPPING_SUFFIX)
+            if candidate.is_file():
+                mapping = candidate
+
         recorded = parse_stamp(stamp)
         if recorded is None:
             try:
@@ -190,6 +223,7 @@ def scan_sessions(directory: Path) -> list[SessionFile]:
                 row_count=count_data_rows(csv_file),
                 columns=read_columns(csv_file),
                 meta=read_metadata(csv_file.parent),
+                mapping_path=mapping,
             )
         )
 

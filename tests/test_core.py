@@ -458,6 +458,54 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(len(scan_sessions(root)), 1)
 
 
+class RebuildAvailabilityTests(unittest.TestCase):
+    """什么时候允许生成波形录屏。不建界面，只验判断逻辑。"""
+
+    class _Fake:
+        """够 _can_rebuild 用的最小 SessionFile 替身。"""
+
+        def __init__(self, columns, video=False, mapping=False):
+            self.columns = columns
+            self.video_path = Path("v.mp4") if video else None
+            self.mapping_path = Path("m.csv") if mapping else None
+
+        @property
+        def is_rebuilt(self):
+            return self.video_path is not None and self.mapping_path is not None
+
+    FULL = ("timestamp(ms)", "finger", "wrist", "other", "system_time")
+    PARTIAL = ("timestamp(ms)", "finger", "system_time")
+
+    def _can(self, sessions, busy=False, ffmpeg="/usr/bin/ffmpeg"):
+        from ppg_collector.app import PPGCollectorApp
+
+        app = PPGCollectorApp.__new__(PPGCollectorApp)   # 不起界面
+        app.rebuild_thread = object() if busy else None
+        app.ffmpeg_path = ffmpeg
+        return PPGCollectorApp._can_rebuild(app, sessions)
+
+    def test_existing_video_does_not_block_generating(self) -> None:
+        # 实时录的那些恰恰最该重建——掉帧导致播放比真实快，时间轴对不上。
+        self.assertTrue(self._can([self._Fake(self.FULL, video=True)]))
+
+    def test_already_rebuilt_can_be_rebuilt_again(self) -> None:
+        # 允许，但界面会在确认框里问"已经重建过，要覆盖吗"。
+        self.assertTrue(self._can([self._Fake(self.FULL, video=True, mapping=True)]))
+
+    def test_partial_device_selection_cannot_draw_three_channels(self) -> None:
+        self.assertFalse(self._can([self._Fake(self.PARTIAL)]))
+
+    def test_blocked_while_another_rebuild_runs(self) -> None:
+        self.assertFalse(self._can([self._Fake(self.FULL)], busy=True))
+
+    def test_blocked_without_ffmpeg(self) -> None:
+        self.assertFalse(self._can([self._Fake(self.FULL)], ffmpeg=None))
+
+    def test_multi_selection_is_not_supported(self) -> None:
+        self.assertFalse(self._can([self._Fake(self.FULL), self._Fake(self.FULL)]))
+        self.assertFalse(self._can([]))
+
+
 class SettingsTests(unittest.TestCase):
     def test_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

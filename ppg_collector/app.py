@@ -1100,15 +1100,9 @@ class PPGCollectorApp:
         self.files_menu.entryconfigure(
             self.FILES_MENU_VIDEO, state="normal" if has_video else "disabled"
         )
-        # 已经有录屏就不必再生成；正在跑的时候也不让再点。
-        can_rebuild = (
-            len(sessions) == 1
-            and not has_video
-            and self.rebuild_thread is None
-            and self.ffmpeg_path is not None
-        )
         self.files_menu.entryconfigure(
-            self.FILES_MENU_REBUILD, state="normal" if can_rebuild else "disabled"
+            self.FILES_MENU_REBUILD,
+            state="normal" if self._can_rebuild(sessions) else "disabled",
         )
         self.files_menu.entryconfigure(
             self.FILES_MENU_DELETE,
@@ -1131,13 +1125,9 @@ class PPGCollectorApp:
         )
         has_video = len(sessions) == 1 and sessions[0].video_path is not None
         self.files_open_video_button.configure(state="normal" if has_video else "disabled")
-        can_rebuild = (
-            len(sessions) == 1
-            and not has_video
-            and self.rebuild_thread is None
-            and self.ffmpeg_path is not None
+        self.files_rebuild_button.configure(
+            state="normal" if self._can_rebuild(sessions) else "disabled"
         )
-        self.files_rebuild_button.configure(state="normal" if can_rebuild else "disabled")
 
     def _refresh_files_list(self) -> None:
         directory = Path(self.output_var.get()).expanduser()
@@ -1211,6 +1201,19 @@ class PPGCollectorApp:
             return
         subprocess.run(["open", str(target)], check=False)
 
+    def _can_rebuild(self, sessions: list[SessionFile]) -> bool:
+        """能不能为这次采集生成波形录屏。
+
+        已经有录屏也允许重新生成——实时录的那些恰恰最该重建（掉帧导致
+        播放比真实快，时间轴对不上）。只是会在确认框里说清楚要覆盖。
+        """
+        if len(sessions) != 1 or self.rebuild_thread is not None:
+            return False
+        if self.ffmpeg_path is None:
+            return False
+        # 只勾了部分设备的采集画不出三路波形。
+        return all(key in sessions[0].columns for key in ("finger", "wrist", "other"))
+
     def _rebuild_selected_session(self) -> None:
         """从 CSV 画出这次采集的波形录屏，在后台线程里跑。"""
         if self.rebuild_thread is not None:
@@ -1228,11 +1231,22 @@ class PPGCollectorApp:
 
         # 渲染大约要采集时长的三分之一，值得先说一声再开始。
         minutes = session.row_count * 0.048 / 60
+        if session.is_rebuilt:
+            existing = "\n这次已经重建过，重新生成会覆盖现有的 MP4。\n"
+        elif session.video_path is not None:
+            # 实时录的那份会被换掉，但它本来就是快放且时间轴不准的。
+            existing = (
+                "\n这次有采集时实时录的 MP4，会被覆盖。\n"
+                "实时录屏因为掉帧会比真实时间快，重建版时长与采集时长一致。\n"
+            )
+        else:
+            existing = ""
         if not messagebox.askyesno(
             "生成波形录屏",
             f"{session.recorded_text}\n"
-            f"{session.row_count:,} 条数据，约 {minutes:.1f} 分钟\n\n"
-            f"预计需要 {minutes / 3:.0f}~{minutes / 2:.0f} 分钟渲染，期间可以继续采集。\n\n"
+            f"{session.row_count:,} 条数据，约 {minutes:.1f} 分钟\n"
+            f"{existing}\n"
+            f"预计需要 {minutes / 6:.0f}~{minutes / 3:.0f} 分钟渲染，期间可以继续采集。\n\n"
             "开始生成吗？",
         ):
             return

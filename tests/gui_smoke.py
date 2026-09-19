@@ -32,6 +32,28 @@ from ppg_collector.app import PPGCollectorApp  # noqa: E402
 from ppg_collector.firmware import AUTO_BOARD_SELECTION  # noqa: E402
 from ppg_collector.protocol import DATA_COLUMNS  # noqa: E402
 
+
+def system_has_ffmpeg() -> bool:
+    """这台机器上到底有没有 ffmpeg —— 故意不调用被测的 find_ffmpeg()。
+
+    守卫和被测对象是同一个函数的话，find_ffmpeg() 一旦退化，测试只会安静
+    地跳过而不是报错，正好放过它该抓的那个 bug。
+    """
+    import shutil
+
+    if shutil.which("ffmpeg"):
+        return True
+    return any(
+        Path(candidate).is_file()
+        for candidate in (
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/opt/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        )
+    )
+
+
 EXPECTED_TABS = ["采集", "串口与日志", "数据文件", "固件烧录", "设置"]
 EXPECTED_HEADER = [
     "timestamp(ms)",
@@ -94,7 +116,10 @@ def check_stream(app: PPGCollectorApp) -> None:
 def start_recording(app: PPGCollectorApp, workspace: Path) -> None:
     app.output_var.set(str(workspace / "out"))
     app.prefix_var.set("gui_smoke")
-    app.video_var.set(False)              # 免掉对 FFmpeg 的依赖
+    # 装了 ffmpeg 就真录一段。这条路专门防的是 PATH 问题：双击启动的 App
+    # 只有 /usr/bin:/bin:/usr/sbin:/sbin，Homebrew 的 ffmpeg 不在里面，
+    # 录屏会静默失败，等采完一趟车才发现没录上。
+    app.video_var.set(system_has_ffmpeg())
     app.driver_var.set("张三")
     app.other_person_var.set("李四")
     for device_id, variable in app.device_selection_vars.items():
@@ -132,6 +157,16 @@ def finish_recording(app: PPGCollectorApp, summary: dict) -> None:
     assert session_directory.name == csv_path.stem, "CSV 没有放进同名的会话文件夹"
     assert (session_directory / "session.json").is_file(), "session.json 没有写出来"
 
+    if system_has_ffmpeg():
+        assert not app.recorder.video_error, f"录屏报错：{app.recorder.video_error}"
+        video = app.recorder.video_path
+        assert video is not None and video.exists(), "装了 ffmpeg 却没生成 MP4"
+        assert video.stat().st_size > 1000, f"MP4 是空的（{video.stat().st_size} 字节）"
+        assert video.parent == session_directory, "MP4 没和 CSV 放在同一个会话文件夹"
+        summary["video"] = f"{video.stat().st_size / 1024:.0f} KB"
+    else:
+        summary["video"] = "跳过（本机没有 ffmpeg）"
+
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.reader(handle))
     assert len(rows) >= 10, f"只写了 {len(rows) - 1} 行"
@@ -168,8 +203,9 @@ def check_files_list(app: PPGCollectorApp, workspace: Path) -> None:
     app._update_files_buttons()
     app._update_files_menu()
     assert str(app.files_reveal_button.cget("state")) == "normal"
-    # 没录波形时"播放录屏"必须是灰的，否则点了没反应。
-    assert str(app.files_menu.entrycget(app.FILES_MENU_VIDEO, "state")) == "disabled"
+    # "播放录屏"跟着这次有没有 MP4 走：没有录屏时点了也没反应，必须是灰的。
+    expected = "normal" if system_has_ffmpeg() else "disabled"
+    assert str(app.files_menu.entrycget(app.FILES_MENU_VIDEO, "state")) == expected
 
     # 删除要真的弹确认，而且不能在没确认时就动手。
     asked: list[str] = []
@@ -237,7 +273,10 @@ def main() -> None:
 
     if failures:
         raise failures[0]
-    print(f"GUI 自检通过：收到 {summary['samples']} 个样本，写入 {summary['rows']} 行 CSV")
+    print(
+        f"GUI 自检通过：收到 {summary['samples']} 个样本，"
+        f"写入 {summary['rows']} 行 CSV，录屏 {summary['video']}"
+    )
 
 
 if __name__ == "__main__":

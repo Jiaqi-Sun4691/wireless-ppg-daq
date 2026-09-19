@@ -38,7 +38,7 @@ import signal
 import subprocess
 
 from .library import SessionFile, scan_sessions
-from .recorder import SessionRecorder
+from .recorder import SessionRecorder, configure_ffmpeg
 from .serial_io import ReplayWorker, SerialEvent, SerialWorker, available_ports
 from .settings import AppSettings, load_settings, save_settings
 
@@ -283,6 +283,9 @@ class PPGCollectorApp:
             flat_seconds=self.settings.flat_seconds,
         )
         self.recorder = SessionRecorder()
+        # 双击启动的 App 拿到的 PATH 不含 Homebrew，matplotlib 就找不到
+        # ffmpeg，录屏会静默失败。开机时一次性定位好。
+        self.ffmpeg_path = configure_ffmpeg()
         self.recording_started_at: float | None = None
         self.total_samples = 0
         self.parse_errors = 0
@@ -1972,11 +1975,22 @@ class PPGCollectorApp:
         ).grid(row=2, column=2, sticky="w")
 
         self._settings_label(page, "Plot 录像", 3)
+        video_row = tk.Frame(page, bg=COLORS["surface"])
+        video_row.grid(row=3, column=1, sticky="w", padx=10, pady=5)
         ttk.Checkbutton(
-            page,
-            text="同步保存 plot_recording_时间.mp4（原脚本行为）",
+            video_row,
+            text="同步保存波形录屏 MP4",
             variable=self.video_var,
-        ).grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        ).pack(side="left")
+        # 有没有 ffmpeg 必须看得见：没有它录屏会失败，而失败是事后才发现的。
+        tk.Label(
+            video_row,
+            text=(f"✓ ffmpeg：{self.ffmpeg_path}" if self.ffmpeg_path
+                  else "⚠ 找不到 ffmpeg，录屏无法保存（brew install ffmpeg）"),
+            bg=COLORS["surface"],
+            fg=COLORS["muted"] if self.ffmpeg_path else COLORS["error"],
+            font=("Helvetica Neue", 9),
+        ).pack(side="left", padx=(10, 0))
 
         ttk.Separator(page, orient="horizontal").grid(row=4, column=0, columnspan=3, sticky="ew", pady=14)
 
@@ -2801,6 +2815,18 @@ class PPGCollectorApp:
             self.notebook.select(self.capture_tab)
             messagebox.showwarning("没有选择设备", "请在设备卡上至少启用一个设备。")
             return
+        # 录屏要是起不来，必须现在就说。原来只往日志里记一行，等采完一趟车
+        # 才发现没有录上——那时候已经补不回来了。
+        if self.video_var.get() and self.ffmpeg_path is None:
+            if not messagebox.askyesno(
+                "录屏无法保存",
+                "勾选了「同步保存波形录屏」，但这台电脑上找不到 ffmpeg，"
+                "这次的 MP4 不会生成。\n\n"
+                "CSV 数据不受影响，照常完整保存。\n\n"
+                "装 ffmpeg：在终端执行 brew install ffmpeg\n\n"
+                "要就这样开始采集吗？",
+            ):
+                return
         output = Path(self.output_var.get()).expanduser()
         prefix = self.prefix_var.get()
         try:
@@ -2848,7 +2874,12 @@ class PPGCollectorApp:
         self.footer_var.set("正在采集。断开设备或关闭程序前请先停止并保存。")
         self._log(f"开始采集：{self.recorder.csv_path}")
         if self.recorder.video_error:
-            self._log(f"CSV 已开始，但波形录像未启动：{self.recorder.video_error}", error=True)
+            self._log(f"CSV 已开始，但波形录屏未启动：{self.recorder.video_error}", error=True)
+            # 日志里那一行太容易错过，这是不可逆的损失，用弹窗挡一下。
+            messagebox.showwarning(
+                "波形录屏未启动",
+                f"CSV 正常记录中，但这次不会有 MP4：\n\n{self.recorder.video_error}",
+            )
 
     def _stop_recording(self, disconnected: bool = False) -> None:
         if not self.recorder.active:

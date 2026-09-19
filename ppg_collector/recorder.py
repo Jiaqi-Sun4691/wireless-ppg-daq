@@ -6,12 +6,43 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
+import shutil
 from typing import TextIO
 
+import matplotlib
 from matplotlib.animation import FFMpegWriter
 from matplotlib.figure import Figure
 
 from .protocol import DEVICE_IDS, CSV_COLUMNS, DataSample, csv_columns_for_devices
+
+# Homebrew and MacPorts put ffmpeg outside the PATH that LaunchServices hands a
+# double-clicked app (/usr/bin:/bin:/usr/sbin:/sbin). matplotlib then silently
+# fails to start the writer and you find out you have no video only afterwards.
+FFMPEG_SEARCH_PATHS = (
+    "/opt/homebrew/bin/ffmpeg",      # Apple silicon Homebrew
+    "/usr/local/bin/ffmpeg",         # Intel Homebrew
+    "/opt/local/bin/ffmpeg",         # MacPorts
+    "/usr/bin/ffmpeg",
+)
+
+
+def find_ffmpeg() -> str | None:
+    """Locate ffmpeg without relying on the inherited PATH."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    for candidate in FFMPEG_SEARCH_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def configure_ffmpeg() -> str | None:
+    """Point matplotlib at ffmpeg. Call once at startup; returns the path."""
+    path = find_ffmpeg()
+    if path:
+        matplotlib.rcParams["animation.ffmpeg_path"] = path
+    return path
 
 
 @dataclass(frozen=True, slots=True)

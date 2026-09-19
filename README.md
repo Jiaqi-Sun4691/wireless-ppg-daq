@@ -20,6 +20,7 @@
 - [日常使用：一次采集的完整流程](#日常使用一次采集的完整流程)
 - [界面说明](#界面说明)
 - [数据格式](#数据格式)
+- [关于波形录屏](#关于波形录屏)
 - [在线检测与告警](#在线检测与告警)
 - [设置项](#设置项)
 - [自检与测试](#自检与测试)
@@ -109,7 +110,7 @@ Wheel  ─┘
   （推荐 [python.org](https://www.python.org/downloads/macos/) 的官方安装包；
   Homebrew 的 `python3` 需要额外 `brew install python-tk`）
 - `pip install -r requirements.txt` → matplotlib、numpy、pyserial
-- **FFmpeg**（可选，只有勾选「保存波形录像」时才需要）
+- **FFmpeg**（可选，只有勾选「同步保存波形录屏」时才需要）
 - **arduino-cli** 或 **Arduino IDE**（可选，只有用界面烧录固件时才需要）
 - CH340 / CP2102 等 USB 转串口驱动，看板子用的是哪颗芯片
 
@@ -354,6 +355,33 @@ PPG Data/
 
 ---
 
+## 关于波形录屏
+
+勾上「同步保存波形录屏」会把界面上那条实时曲线录成 MP4，和 CSV 放在同一个
+会话文件夹里。**它是回放动画，不是数据**——做机器学习用不上它，CSV 里已经有
+每一个采样点。不需要就关掉，能省不少磁盘。
+
+录屏要 FFmpeg。**这里有个坑值得单独说**：macOS 通过双击启动 App 时，给的
+PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin`，而 Homebrew 装的 ffmpeg 在
+`/opt/homebrew/bin`，不在里面。matplotlib 就找不到它，录屏会**静默失败**
+——CSV 照常写，等你采完一趟车才发现没有 MP4。
+
+所以程序不靠 PATH 找 ffmpeg，而是自己去 `shutil.which` 加 Homebrew /
+MacPorts / 系统这几个常见位置挨个看。另外：
+
+- 「设置」页的录屏勾选框旁边直接显示找到的路径，找不到会标红；
+- 勾了录屏但找不到 ffmpeg 时，**点「开始采集」会先弹窗问你**，而不是让你
+  采完才知道；
+- 万一开始之后写入器仍然起不来，也会弹窗，不只是往日志里记一行。
+
+装 FFmpeg：
+
+```bash
+brew install ffmpeg
+```
+
+---
+
 ## 在线检测与告警
 
 ### 判断依据
@@ -426,7 +454,7 @@ Master 每 500 ms 发一行 `@STATUS`，里面对四块从机各有四个字段�
 | --- | --- | --- |
 | 保存文件夹 | `~/Documents/PPG Data` | |
 | CSV 文件名前缀 | `ppg_imu_data` | 后面自动接时间戳 |
-| Plot 录像 | 开 | 保存波形 MP4，需要 FFmpeg |
+| Plot 录像 | 开 | 保存波形 MP4，需要 FFmpeg（旁边会显示找到的路径） |
 | Slave 离线 | 2000 ms | 多久收不到包算离线，必须大于延迟阈值 |
 | 延迟警告 | 800 ms | **下限 700 ms**（见下），低于它会被自动抬上来 |
 | 数据卡住 | 2.0 秒 | 数值多久一动不动算卡住 |

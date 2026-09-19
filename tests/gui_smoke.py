@@ -191,21 +191,30 @@ def check_files_list(app: PPGCollectorApp, workspace: Path) -> None:
     assert items, "刚采完的这一次没有出现在列表里"
     assert str(app.files_tree.cget("selectmode")) == "extended", "列表不能多选"
 
-    menu_labels = [
-        str(app.files_menu.entrycget(index, "label"))
-        for index in (app.FILES_MENU_REVEAL, app.FILES_MENU_CSV,
-                      app.FILES_MENU_VIDEO, app.FILES_MENU_DELETE)
-    ]
-    assert menu_labels[:3] == ["在访达中显示", "打开 CSV", "播放录屏"], menu_labels
-    assert "删除" in menu_labels[3], menu_labels
+    label_of = lambda index: str(app.files_menu.entrycget(index, "label"))
+    assert label_of(app.FILES_MENU_REVEAL) == "在访达中显示"
+    assert label_of(app.FILES_MENU_CSV) == "打开 CSV"
+    # 实时录的和重建的是两个文件，所以是两个菜单项。
+    assert label_of(app.FILES_MENU_VIDEO) == "播放实时录屏"
+    assert label_of(app.FILES_MENU_REBUILT_PLAY) == "播放重建录屏"
+    assert "生成" in label_of(app.FILES_MENU_REBUILD)
+    assert "删除" in label_of(app.FILES_MENU_DELETE)
 
     app.files_tree.selection_set(items[0])
     app._update_files_buttons()
     app._update_files_menu()
     assert str(app.files_reveal_button.cget("state")) == "normal"
-    # "播放录屏"跟着这次有没有 MP4 走：没有录屏时点了也没反应，必须是灰的。
-    expected = "normal" if system_has_ffmpeg() else "disabled"
-    assert str(app.files_menu.entrycget(app.FILES_MENU_VIDEO, "state")) == expected
+    # 播放项跟着对应的文件走：文件不在，点了也没反应，必须是灰的。
+    live = "normal" if system_has_ffmpeg() else "disabled"
+    assert str(app.files_menu.entrycget(app.FILES_MENU_VIDEO, "state")) == live
+    # 这一次只实时录过，没重建过。
+    assert str(app.files_menu.entrycget(app.FILES_MENU_REBUILT_PLAY, "state")) == "disabled"
+    assert str(app.files_open_rebuilt_button.cget("state")) == "disabled"
+    # 这一段只勾了 finger 和 wheel，没有 wrist / other PPG，画不出原来那张
+    # 三路波形图，所以"生成波形录屏"必须是灰的——点了也只会报缺列。
+    # （已经有实时录屏并不构成阻拦，那是另一回事，由单元测试覆盖。）
+    assert "wrist" not in app.recorder.csv_columns
+    assert str(app.files_rebuild_button.cget("state")) == "disabled"
 
     # 删除要真的弹确认，而且不能在没确认时就动手。
     asked: list[str] = []

@@ -286,6 +286,13 @@ class PPGCollectorApp:
         # 双击启动的 App 拿到的 PATH 不含 Homebrew，matplotlib 就找不到
         # ffmpeg，录屏会静默失败。开机时一次性定位好。
         self.ffmpeg_path = configure_ffmpeg()
+        # 写进 launch.log。录屏失败是事后才发现的那种问题，启动时留一行，
+        # 出事时不用猜"当时到底有没有找到 ffmpeg"。
+        print(
+            f"[ffmpeg] {self.ffmpeg_path}" if self.ffmpeg_path
+            else f"[ffmpeg] 未找到（PATH={os.environ.get('PATH', '')}）",
+            flush=True,
+        )
         self.recording_started_at: float | None = None
         self.total_samples = 0
         self.parse_errors = 0

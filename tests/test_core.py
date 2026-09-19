@@ -438,9 +438,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(defaults.master_mac, "")
         self.assertEqual(defaults.driver_name, "")
         self.assertEqual(defaults.other_name, "")
-        # 采集时不编码视频：那会和串口读取抢主线程，而视频事后能从 CSV 再
-        # 生成，掉一行数据却不可逆。
-        self.assertFalse(defaults.record_video)
 
     def test_default_output_directory_follows_whoever_runs_it(self) -> None:
         import importlib

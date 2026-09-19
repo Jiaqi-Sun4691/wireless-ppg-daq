@@ -38,6 +38,22 @@ class PlotParts:
     status_text: Any
     corr_texts: dict[str, Any]
 
+    @property
+    def dynamic_artists(self) -> list[Any]:
+        """每帧会变的那些，其余（坐标轴、刻度、标题）一帧都不变。
+
+        顺序就是绘制顺序：线先画，图例后画——否则波形会盖住右上角的图例。
+        重建录屏靠这个做 blitting，只重画这几样，比整图重绘快约 8 倍。
+        """
+        artists = list(self.lines.values())
+        legend = self.axis.get_legend()
+        if legend is not None:
+            artists.append(legend)
+        artists.append(self.time_text)
+        artists.append(self.status_text)
+        artists.extend(self.corr_texts.values())
+        return artists
+
 
 def build_ppg_figure(figsize: tuple[float, float] = (10, 6), dpi: int = 100) -> PlotParts:
     figure = Figure(figsize=figsize, dpi=dpi, facecolor="#FFFFFF")

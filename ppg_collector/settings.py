@@ -12,7 +12,9 @@ class AppSettings:
     driver_name: str = ""
     other_name: str = ""
     baud_rate: int = 115200
-    record_video: bool = True
+    # 默认不在采集时编码视频：那会和串口读取抢主线程，而且视频是派生物，
+    # 事后在「数据文件」页按需生成即可，时间轴还更准。
+    record_video: bool = False
     offline_ms: int = 2000
     delayed_ms: int = 800
     flat_seconds: float = 2.0

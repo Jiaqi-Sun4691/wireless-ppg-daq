@@ -38,6 +38,14 @@ import signal
 import subprocess
 
 from .library import SessionFile, scan_sessions
+from .plot import (
+    PLOT_WINDOW,
+    SIM_WINDOW_MS,
+    build_ppg_figure,
+    correlation,
+    format_correlation,
+)
+from .rebuild import Cancelled, rebuild_session
 from .recorder import SessionRecorder, configure_ffmpeg
 from .serial_io import ReplayWorker, SerialEvent, SerialWorker, available_ports
 from .settings import AppSettings, load_settings, save_settings
@@ -251,8 +259,10 @@ class DeviceCard(tk.Frame):
 
 
 class PPGCollectorApp:
-    ORIGINAL_PLOT_WINDOW = 400
-    ORIGINAL_SIM_WINDOW_MS = 3000
+    # 400 点窗口、3 秒相关性窗——定义在 plot.py，这里只是取个别名，
+    # 免得同一个数字在两个文件里各写一遍。
+    ORIGINAL_PLOT_WINDOW = PLOT_WINDOW
+    ORIGINAL_SIM_WINDOW_MS = SIM_WINDOW_MS
     PLOT_INTERVAL_MS = 50
     UI_INTERVAL_MS = 200
     EVENT_INTERVAL_MS = 35
@@ -286,6 +296,8 @@ class PPGCollectorApp:
         # 双击启动的 App 拿到的 PATH 不含 Homebrew，matplotlib 就找不到
         # ffmpeg，录屏会静默失败。开机时一次性定位好。
         self.ffmpeg_path = configure_ffmpeg()
+        self.rebuild_thread: threading.Thread | None = None
+        self.rebuild_cancel = False
         # 写进 launch.log。录屏失败是事后才发现的那种问题，启动时留一行，
         # 出事时不用猜"当时到底有没有找到 ffmpeg"。
         print(
@@ -740,98 +752,17 @@ class PPGCollectorApp:
     def _build_plot_tab(self) -> None:
         self.plot_tab.rowconfigure(0, weight=1)
         self.plot_tab.columnconfigure(0, weight=1)
-        # This is the plot from ``dual-imu-_timeadded_副本.py`` embedded in Tk.
-        # Keep its 400-sample, three-PPG layout and interaction model intact.
-        self.figure = Figure(figsize=(10, 6), dpi=100, facecolor="#FFFFFF")
-        self.ppg_axis = self.figure.add_subplot(1, 1, 1)
-        x_data = list(range(self.ORIGINAL_PLOT_WINDOW))
-        initial_values = [0] * self.ORIGINAL_PLOT_WINDOW
-
-        self.plot_lines: dict[str, Any] = {}
-        self.plot_lines["finger"], = self.ppg_axis.plot(
-            x_data,
-            initial_values,
-            label="Finger PPG",
-            color="tab:blue",
-        )
-        self.plot_lines["wrist"], = self.ppg_axis.plot(
-            x_data,
-            initial_values,
-            label="Wrist PPG",
-            color="tab:orange",
-        )
-        self.plot_lines["other"], = self.ppg_axis.plot(
-            x_data,
-            initial_values,
-            label="Other PPG",
-            color="tab:green",
-        )
-
-        self.ppg_axis.set_title(" ")
-        self.ppg_axis.set_xlabel("Sample Index")
-        self.ppg_axis.set_ylabel("Amplitude")
-        self.ppg_axis.legend(loc="upper right")
-        self.ppg_axis.set_ylim(0, 4095)
-
-        self.plot_time_text = self.ppg_axis.text(
-            0.02,
-            1.04,
-            "System time: --",
-            transform=self.ppg_axis.transAxes,
-            fontsize=11,
-            fontweight="bold",
-            va="top",
-            color="black",
-        )
-        self.plot_status_text = self.ppg_axis.text(
-            0.70,
-            1.04,
-            "Status: PAUSED",
-            transform=self.ppg_axis.transAxes,
-            fontsize=11,
-            fontweight="bold",
-            va="top",
-            color="black",
-        )
-        self.ppg_axis.text(
-            0.02,
-            0.97,
-            "Real-time similarity",
-            transform=self.ppg_axis.transAxes,
-            fontsize=11,
-            fontweight="bold",
-            va="top",
-            color="black",
-        )
-        self.plot_corr_fw_text = self.ppg_axis.text(
-            0.02,
-            0.90,
-            "Finger ↔ Wrist: N/A",
-            transform=self.ppg_axis.transAxes,
-            fontsize=10,
-            va="top",
-            color="black",
-        )
-        self.plot_corr_fo_text = self.ppg_axis.text(
-            0.02,
-            0.85,
-            "Finger ↔ Other: N/A",
-            transform=self.ppg_axis.transAxes,
-            fontsize=10,
-            va="top",
-            color="black",
-        )
-        self.plot_corr_wo_text = self.ppg_axis.text(
-            0.02,
-            0.80,
-            "Wrist ↔ Other: N/A",
-            transform=self.ppg_axis.transAxes,
-            fontsize=10,
-            va="top",
-            color="black",
-        )
-
-        self.figure.subplots_adjust(left=0.09, right=0.98, bottom=0.10, top=0.90)
+        # 图本身定义在 plot.py，界面和录屏重建共用同一份——分开写两份的话，
+        # 改了这边忘了那边，就会得到"看着像但对不上"的视频。
+        parts = build_ppg_figure()
+        self.figure = parts.figure
+        self.ppg_axis = parts.axis
+        self.plot_lines = parts.lines
+        self.plot_time_text = parts.time_text
+        self.plot_status_text = parts.status_text
+        self.plot_corr_fw_text = parts.corr_texts["fw"]
+        self.plot_corr_fo_text = parts.corr_texts["fo"]
+        self.plot_corr_wo_text = parts.corr_texts["wo"]
         self.plot_canvas = FigureCanvasTkAgg(self.figure, master=self.plot_tab)
         self.plot_canvas.draw()
         self.plot_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
@@ -1056,6 +987,9 @@ class PPGCollectorApp:
         self.files_menu.add_command(
             label="播放录屏", command=lambda: self._open_selected_session("video")
         )
+        self.files_menu.add_command(
+            label="生成波形录屏", command=self._rebuild_selected_session
+        )
         self.files_menu.add_separator()
         self.files_menu.add_command(label="删除这次采集", command=self._delete_selected_session)
         # macOS 上右键落在 Button-2 还是 Button-3 取决于 Tk 版本和鼠标，
@@ -1091,6 +1025,14 @@ class PPGCollectorApp:
             state="disabled",
         )
         self.files_open_video_button.grid(row=0, column=2, padx=6)
+        self.files_rebuild_button = ttk.Button(
+            actions,
+            text="生成波形录屏",
+            style="Secondary.TButton",
+            command=self._rebuild_selected_session,
+            state="disabled",
+        )
+        self.files_rebuild_button.grid(row=0, column=3, padx=6)
         self.files_delete_button = ttk.Button(
             actions,
             text="删除这次采集",
@@ -1098,7 +1040,7 @@ class PPGCollectorApp:
             command=self._delete_selected_session,
             state="disabled",
         )
-        self.files_delete_button.grid(row=0, column=3, padx=(18, 0))
+        self.files_delete_button.grid(row=0, column=4, padx=(18, 0))
 
         tk.Label(
             page,
@@ -1140,7 +1082,13 @@ class PPGCollectorApp:
 
     # 菜单项下标：0 显示 / 1 CSV / 2 录屏 / 3 分隔线 / 4 删除。
     # 按下标而不是按标签配置——删除项的标签会随选中数量变，按旧标签查会找不到。
-    FILES_MENU_REVEAL, FILES_MENU_CSV, FILES_MENU_VIDEO, FILES_MENU_DELETE = 0, 1, 2, 4
+    (
+        FILES_MENU_REVEAL,
+        FILES_MENU_CSV,
+        FILES_MENU_VIDEO,
+        FILES_MENU_REBUILD,
+        FILES_MENU_DELETE,
+    ) = 0, 1, 2, 3, 5
 
     def _update_files_menu(self) -> None:
         sessions = self._selected_sessions()
@@ -1150,6 +1098,16 @@ class PPGCollectorApp:
         self.files_menu.entryconfigure(self.FILES_MENU_CSV, state=single)
         self.files_menu.entryconfigure(
             self.FILES_MENU_VIDEO, state="normal" if has_video else "disabled"
+        )
+        # 已经有录屏就不必再生成；正在跑的时候也不让再点。
+        can_rebuild = (
+            len(sessions) == 1
+            and not has_video
+            and self.rebuild_thread is None
+            and self.ffmpeg_path is not None
+        )
+        self.files_menu.entryconfigure(
+            self.FILES_MENU_REBUILD, state="normal" if can_rebuild else "disabled"
         )
         self.files_menu.entryconfigure(
             self.FILES_MENU_DELETE,
@@ -1172,6 +1130,13 @@ class PPGCollectorApp:
         )
         has_video = len(sessions) == 1 and sessions[0].video_path is not None
         self.files_open_video_button.configure(state="normal" if has_video else "disabled")
+        can_rebuild = (
+            len(sessions) == 1
+            and not has_video
+            and self.rebuild_thread is None
+            and self.ffmpeg_path is not None
+        )
+        self.files_rebuild_button.configure(state="normal" if can_rebuild else "disabled")
 
     def _refresh_files_list(self) -> None:
         directory = Path(self.output_var.get()).expanduser()
@@ -1243,6 +1208,78 @@ class PPGCollectorApp:
             self._refresh_files_list()
             return
         subprocess.run(["open", str(target)], check=False)
+
+    def _rebuild_selected_session(self) -> None:
+        """从 CSV 画出这次采集的波形录屏，在后台线程里跑。"""
+        if self.rebuild_thread is not None:
+            messagebox.showinfo("正在生成", "已经有一次录屏在生成，请等它结束。")
+            return
+        session = self._selected_session()
+        if session is None:
+            return
+        if self.ffmpeg_path is None:
+            messagebox.showerror(
+                "缺少 ffmpeg",
+                "生成录屏需要 ffmpeg。\n\n在终端执行：brew install ffmpeg",
+            )
+            return
+
+        # 渲染大约要采集时长的三分之一，值得先说一声再开始。
+        minutes = session.row_count * 0.048 / 60
+        if not messagebox.askyesno(
+            "生成波形录屏",
+            f"{session.recorded_text}\n"
+            f"{session.row_count:,} 条数据，约 {minutes:.1f} 分钟\n\n"
+            f"预计需要 {minutes / 3:.0f}~{minutes / 2:.0f} 分钟渲染，期间可以继续采集。\n\n"
+            "开始生成吗？",
+        ):
+            return
+
+        csv_path = session.csv_path
+        self.rebuild_cancel = False
+        self.notebook.select(self.files_tab)
+        self._log(f"开始生成波形录屏：{csv_path.name}")
+
+        def report(done: int, total: int) -> None:
+            # 线程里不能碰 Tk，交回主线程。
+            self.root.after(0, lambda: self.footer_var.set(
+                f"正在生成波形录屏 {done * 100 // max(total, 1)}%（{done:,}/{total:,} 帧）"
+            ))
+
+        def work() -> None:
+            try:
+                result = rebuild_session(
+                    csv_path,
+                    progress=report,
+                    should_cancel=lambda: self.rebuild_cancel,
+                )
+            except Cancelled:
+                self.root.after(0, lambda: self._rebuild_done(None, "已取消"))
+            except Exception as exc:
+                message = str(exc)
+                self.root.after(0, lambda: self._rebuild_done(None, message))
+            else:
+                self.root.after(0, lambda: self._rebuild_done(result, None))
+
+        self.rebuild_thread = threading.Thread(target=work, daemon=True, name="rebuild-video")
+        self.rebuild_thread.start()
+        self._update_files_buttons()
+
+    def _rebuild_done(self, result, error: str | None) -> None:
+        self.rebuild_thread = None
+        if error is not None:
+            self.footer_var.set(f"波形录屏未生成：{error}")
+            self._log(f"波形录屏未生成：{error}", error=True)
+            if error != "已取消":
+                messagebox.showerror("生成失败", error)
+        else:
+            self.footer_var.set(
+                f"波形录屏已生成：{result.frames:,} 帧 / {result.seconds} 秒"
+            )
+            self._log(
+                f"波形录屏已生成（耗时 {result.elapsed / 60:.1f} 分）：{result.video_path}"
+            )
+        self._refresh_files_list()
 
     @staticmethod
     def _trash_targets(session: SessionFile) -> list[Path]:
@@ -3039,17 +3076,9 @@ class PPGCollectorApp:
         self.plot_corr_fo_text.set_text(f"Finger ↔ Other: {corr_fo}")
         self.plot_corr_wo_text.set_text(f"Wrist ↔ Other: {corr_wo}")
 
-    @staticmethod
-    def _correlation(first: np.ndarray, second: np.ndarray) -> float:
-        if first.size < 10 or second.size < 10:
-            return float("nan")
-        if np.allclose(first, first[0]) or np.allclose(second, second[0]):
-            return float("nan")
-        return float(np.corrcoef(first, second)[0, 1])
-
-    @staticmethod
-    def _format_correlation(value: float) -> str:
-        return "N/A" if np.isnan(value) else f"{value:.2f}"
+    # 相关性算法也在 plot.py，重建录屏时算出来的数要和界面上显示的一致。
+    _correlation = staticmethod(correlation)
+    _format_correlation = staticmethod(format_correlation)
 
     @staticmethod
     def _battery_text(node: NodeHealth) -> str:

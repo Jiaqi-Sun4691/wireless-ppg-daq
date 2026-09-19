@@ -25,6 +25,7 @@ from ppg_collector.monitor import (
     battery_percentage,
 )
 from ppg_collector.protocol import LineKind, csv_columns_for_devices, parse_serial_line
+from ppg_collector.rebuild import FPS as REBUILD_FPS, load_session
 from ppg_collector.recorder import SessionRecorder, safe_prefix
 from ppg_collector.settings import (
     AppSettings,
@@ -360,6 +361,48 @@ class RecordingTests(unittest.TestCase):
             self.assertFalse(csv_path.exists())
 
 
+class RebuildTests(unittest.TestCase):
+    """录屏重建：CSV 进去，帧序列出来。不碰 ffmpeg，只验数据到帧的映射。"""
+
+    def _write(self, folder: Path, rows: int) -> Path:
+        path = folder / "ppg_imu_data_2026-09-19_10-00-00.csv"
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                ["timestamp(ms)", "finger", "wrist", "other", "system_time"]
+            )
+            for index in range(rows):
+                writer.writerow([index * 48, 2000, 1900, 2100, "2026-09-19 10:00:00"])
+        return path
+
+    def test_loads_the_three_ppg_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write(Path(temporary), 50)
+            timestamps, values, wall = load_session(path)
+            self.assertEqual(timestamps.size, 50)
+            self.assertEqual(set(values), {"finger", "wrist", "other"})
+            self.assertEqual(timestamps[1] - timestamps[0], 48)
+            self.assertEqual(wall[0], "2026-09-19 10:00:00")
+
+    def test_video_length_matches_real_elapsed_time(self) -> None:
+        """重建版是真实时长——原来的实时录屏因为掉帧会快约 1.6 倍。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write(Path(temporary), 1000)
+            timestamps, _values, _wall = load_session(path)
+            span_seconds = (timestamps[-1] - timestamps[0]) / 1000
+            frames = int(span_seconds * REBUILD_FPS) + 1
+            self.assertAlmostEqual(frames / REBUILD_FPS, span_seconds, delta=0.1)
+
+    def test_missing_ppg_column_is_rejected_with_a_readable_reason(self) -> None:
+        # 只勾了部分设备的采集画不出三路波形，要说清楚而不是抛 KeyError。
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "partial.csv"
+            path.write_text("timestamp(ms),finger,system_time\n0,2000,x\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as caught:
+                load_session(path)
+            self.assertIn("wrist", str(caught.exception))
+
+
 class SettingsTests(unittest.TestCase):
     def test_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -395,6 +438,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(defaults.master_mac, "")
         self.assertEqual(defaults.driver_name, "")
         self.assertEqual(defaults.other_name, "")
+        # 采集时不编码视频：那会和串口读取抢主线程，而视频事后能从 CSV 再
+        # 生成，掉一行数据却不可逆。
+        self.assertFalse(defaults.record_video)
 
     def test_default_output_directory_follows_whoever_runs_it(self) -> None:
         import importlib

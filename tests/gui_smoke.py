@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import tempfile
@@ -114,6 +115,9 @@ def start_recording(app: PPGCollectorApp, workspace: Path) -> None:
     assert "张三" in asked[0] and "李四" in asked[0], f"确认框没显示姓名：{asked[0]}"
     assert app.plot_status_text.get_text() == "Status: RECORDING"
     assert str(app.device_cards["finger"].selection_check.cget("state")) == "disabled"
+    # 开始时刻要是墙上时钟，不是时长——用来对行车视频和现场笔记。
+    assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", app.start_time_var.get()), \
+        f"开始时刻没填上：{app.start_time_var.get()!r}"
 
 
 def finish_recording(app: PPGCollectorApp, summary: dict) -> None:
@@ -136,8 +140,51 @@ def finish_recording(app: PPGCollectorApp, summary: dict) -> None:
     for row in rows[1:]:
         assert row[-2:] == ["张三", "李四"], f"某行缺姓名：{row}"
 
+    # 停止后不清空：事后回填笔记时还要看。
+    assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", app.start_time_var.get()), \
+        "停止采集后开始时刻被清空了"
+
     summary["samples"] = app.total_samples
     summary["rows"] = len(rows) - 1
+
+
+def check_files_list(app: PPGCollectorApp, workspace: Path) -> None:
+    """数据文件页：多选、右键菜单、批量删除的确认文案。"""
+    app.output_var.set(str(workspace / "out"))
+    app._refresh_files_list()
+    items = app.files_tree.get_children()
+    assert items, "刚采完的这一次没有出现在列表里"
+    assert str(app.files_tree.cget("selectmode")) == "extended", "列表不能多选"
+
+    menu_labels = [
+        str(app.files_menu.entrycget(index, "label"))
+        for index in (app.FILES_MENU_REVEAL, app.FILES_MENU_CSV,
+                      app.FILES_MENU_VIDEO, app.FILES_MENU_DELETE)
+    ]
+    assert menu_labels[:3] == ["在访达中显示", "打开 CSV", "播放录屏"], menu_labels
+    assert "删除" in menu_labels[3], menu_labels
+
+    app.files_tree.selection_set(items[0])
+    app._update_files_buttons()
+    app._update_files_menu()
+    assert str(app.files_reveal_button.cget("state")) == "normal"
+    # 没录波形时"播放录屏"必须是灰的，否则点了没反应。
+    assert str(app.files_menu.entrycget(app.FILES_MENU_VIDEO, "state")) == "disabled"
+
+    # 删除要真的弹确认，而且不能在没确认时就动手。
+    asked: list[str] = []
+    original = app_module.messagebox.askyesno
+    app_module.messagebox.askyesno = lambda title, message, **kw: (
+        asked.append(f"{title}\n{message}") or False
+    )
+    try:
+        app._delete_selected_session()
+    finally:
+        app_module.messagebox.askyesno = original
+    assert asked, "删除没有弹确认框"
+    assert "废纸篓" in asked[0], asked[0]
+    assert app.recorder.csv_path is not None and app.recorder.csv_path.exists(), \
+        "用户没点确认，文件却已经被删了"
 
 
 def main() -> None:
@@ -155,6 +202,7 @@ def main() -> None:
         (2000, lambda: check_stream(app)),
         (0, lambda: start_recording(app, workspace)),
         (1500, lambda: finish_recording(app, summary)),
+        (0, lambda: check_files_list(app, workspace)),
     ]
 
     def shutdown() -> None:

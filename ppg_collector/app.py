@@ -330,6 +330,9 @@ class PPGCollectorApp:
         self.rate_var = tk.StringVar(value="0.0 Hz")
         self.samples_var = tk.StringVar(value="0")
         self.duration_var = tk.StringVar(value="00:00:00")
+        # 墙上时钟的开始时刻。recording_started_at 是 monotonic，只能算
+        # 时长，换算不回"几点开始的"——对不上行车视频和现场笔记。
+        self.start_time_var = tk.StringVar(value="—")
         self.file_var = tk.StringVar(value="尚未开始采集")
         self.footer_var = tk.StringVar(value="请选择 Master 串口并连接。")
         self.corr_fw_var = tk.StringVar(value="N/A")
@@ -704,6 +707,7 @@ class PPGCollectorApp:
         metrics = (
             ("频率", self.rate_var),
             ("样本", self.samples_var),
+            ("开始", self.start_time_var),
             ("时长", self.duration_var),
             ("CSV", self.overview_csv_selection_var),
         )
@@ -1019,7 +1023,10 @@ class PPGCollectorApp:
             "recorded": 150, "subject": 160, "rows": 80, "duration": 70, "size": 80,
             "cols": 60, "devices": 300, "video": 60,
         }
-        self.files_tree = ttk.Treeview(page, columns=columns, show="headings", height=12)
+        # extended：可以按住 shift / cmd 多选，一次删掉好几次采集。
+        self.files_tree = ttk.Treeview(
+            page, columns=columns, show="headings", height=12, selectmode="extended"
+        )
         for column in columns:
             anchor = "w" if column in ("devices", "subject") else "center"
             self.files_tree.heading(column, text=headings[column])
@@ -1030,6 +1037,23 @@ class PPGCollectorApp:
         files_scroll.grid(row=2, column=1, sticky="ns")
         self.files_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_files_buttons())
         self.files_tree.bind("<Double-1>", lambda _event: self._reveal_selected_session())
+        # 直接在列表上操作：右键出菜单，Delete / Backspace 删除。
+        self.files_menu = tk.Menu(self.files_tree, tearoff=0)
+        self.files_menu.add_command(label="在访达中显示", command=self._reveal_selected_session)
+        self.files_menu.add_command(
+            label="打开 CSV", command=lambda: self._open_selected_session("csv")
+        )
+        self.files_menu.add_command(
+            label="播放录屏", command=lambda: self._open_selected_session("video")
+        )
+        self.files_menu.add_separator()
+        self.files_menu.add_command(label="删除这次采集", command=self._delete_selected_session)
+        # macOS 上右键落在 Button-2 还是 Button-3 取决于 Tk 版本和鼠标，
+        # 三个都绑上；Control+左键是触控板用户的老习惯。
+        for sequence in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):
+            self.files_tree.bind(sequence, self._show_files_menu)
+        for sequence in ("<Delete>", "<BackSpace>"):
+            self.files_tree.bind(sequence, lambda _event: self._delete_selected_session())
 
         actions = tk.Frame(page, bg=COLORS["surface"])
         actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -1083,13 +1107,60 @@ class PPGCollectorApp:
             return None
         return self.files_sessions.get(selection[0])
 
+    def _selected_sessions(self) -> list[SessionFile]:
+        found = [self.files_sessions.get(item) for item in self.files_tree.selection()]
+        return [session for session in found if session is not None]
+
+    def _show_files_menu(self, event) -> str:
+        """Right-click: act on the row under the cursor."""
+        row = self.files_tree.identify_row(event.y)
+        if not row:
+            return "break"
+        # Clicking outside the current selection moves to that row; clicking
+        # inside it keeps the multi-selection intact.
+        if row not in self.files_tree.selection():
+            self.files_tree.selection_set(row)
+        self.files_tree.focus(row)
+        self._update_files_menu()
+        try:
+            self.files_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.files_menu.grab_release()
+        return "break"
+
+    # 菜单项下标：0 显示 / 1 CSV / 2 录屏 / 3 分隔线 / 4 删除。
+    # 按下标而不是按标签配置——删除项的标签会随选中数量变，按旧标签查会找不到。
+    FILES_MENU_REVEAL, FILES_MENU_CSV, FILES_MENU_VIDEO, FILES_MENU_DELETE = 0, 1, 2, 4
+
+    def _update_files_menu(self) -> None:
+        sessions = self._selected_sessions()
+        single = "normal" if len(sessions) == 1 else "disabled"
+        has_video = len(sessions) == 1 and sessions[0].video_path is not None
+        self.files_menu.entryconfigure(self.FILES_MENU_REVEAL, state=single)
+        self.files_menu.entryconfigure(self.FILES_MENU_CSV, state=single)
+        self.files_menu.entryconfigure(
+            self.FILES_MENU_VIDEO, state="normal" if has_video else "disabled"
+        )
+        self.files_menu.entryconfigure(
+            self.FILES_MENU_DELETE,
+            state="normal" if sessions else "disabled",
+            label=(
+                "删除这次采集" if len(sessions) <= 1
+                else f"删除选中的 {len(sessions)} 次采集"
+            ),
+        )
+
     def _update_files_buttons(self) -> None:
-        session = self._selected_session()
-        state = "normal" if session is not None else "disabled"
-        self.files_reveal_button.configure(state=state)
-        self.files_open_csv_button.configure(state=state)
-        self.files_delete_button.configure(state=state)
-        has_video = session is not None and session.video_path is not None
+        sessions = self._selected_sessions()
+        # 打开类操作对"多选"没有意义，只有删除支持批量。
+        single = "normal" if len(sessions) == 1 else "disabled"
+        self.files_reveal_button.configure(state=single)
+        self.files_open_csv_button.configure(state=single)
+        self.files_delete_button.configure(
+            state="normal" if sessions else "disabled",
+            text="删除这次采集" if len(sessions) <= 1 else f"删除选中的 {len(sessions)} 次",
+        )
+        has_video = len(sessions) == 1 and sessions[0].video_path is not None
         self.files_open_video_button.configure(state="normal" if has_video else "disabled")
 
     def _refresh_files_list(self) -> None:
@@ -1163,29 +1234,44 @@ class PPGCollectorApp:
             return
         subprocess.run(["open", str(target)], check=False)
 
-    def _delete_selected_session(self) -> None:
-        session = self._selected_session()
-        if session is None:
-            return
-        names = [session.csv_path.name]
-        if session.video_path is not None:
-            names.append(session.video_path.name)
-        confirmed = messagebox.askyesno(
-            "删除这次采集",
-            "以下文件将被移到废纸篓：\n\n" + "\n".join(names) + "\n\n确定删除吗？",
-        )
-        if not confirmed:
-            return
+    @staticmethod
+    def _trash_targets(session: SessionFile) -> list[Path]:
+        """What to move to Trash for one session."""
         folder = session.folder
-        # If the session owns its folder, trash the whole thing in one go.
-        owns_folder = (
-            folder.is_dir()
-            and folder.name == session.csv_path.stem
+        # A session that owns its own folder goes as a whole, so anything the
+        # user dropped in there (dashcam footage, notes) goes with it.
+        if folder.is_dir() and folder.name == session.csv_path.stem:
+            return [folder]
+        return [session.csv_path] + (
+            [session.video_path] if session.video_path else []
         )
-        targets = (
-            [folder] if owns_folder
-            else [session.csv_path] + ([session.video_path] if session.video_path else [])
-        )
+
+    def _delete_selected_session(self) -> None:
+        sessions = self._selected_sessions()
+        if not sessions:
+            return
+
+        if len(sessions) == 1:
+            title = "删除这次采集"
+            listing = [path.name for path in self._trash_targets(sessions[0])]
+        else:
+            title = f"删除选中的 {len(sessions)} 次采集"
+            listing = [
+                f"{session.recorded_text}  {session.subject_text}"
+                for session in sessions
+            ]
+        # 删除是不可逆的方向，所以把行数一并摆出来——空采集和一小时的数据
+        # 在列表里长得一样，确认框是最后一道防线。
+        rows = sum(session.row_count for session in sessions)
+        if not messagebox.askyesno(
+            title,
+            "以下内容将被移到废纸篓：\n\n"
+            + "\n".join(listing)
+            + f"\n\n共 {rows:,} 条数据。确定删除吗？",
+        ):
+            return
+
+        targets = [path for session in sessions for path in self._trash_targets(session)]
         # Move to Trash rather than unlink, so a mis-click is recoverable.
         script = "".join(
             f'tell application "Finder" to delete POSIX file "{path}"\n' for path in targets
@@ -1196,7 +1282,7 @@ class PPGCollectorApp:
         if result.returncode != 0:
             messagebox.showerror("删除失败", result.stderr.strip() or "无法移动到废纸篓。")
         else:
-            self._log(f"已删除采集：{session.csv_path.name}")
+            self._log(f"已删除 {len(sessions)} 次采集，共 {rows:,} 条数据。")
         self._refresh_files_list()
 
     def _build_firmware_tab(self) -> None:
@@ -2738,6 +2824,8 @@ class PPGCollectorApp:
             return
 
         self.recording_started_at = time.monotonic()
+        # 停止后不清空：常常要事后回填笔记、对行车视频的时间轴。
+        self.start_time_var.set(datetime.now().strftime("%H:%M:%S"))
         self.notebook.select(self.capture_tab)
         self.active_recording_devices = selected_devices
         self.last_recorded_timestamp = None
